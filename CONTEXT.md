@@ -29,7 +29,7 @@ Vigil is a B2B AI-powered asset and contract tracking web app. It allows employe
 | AI Agent | Anthropic API | claude-sonnet-4-20250514 |
 | Background Jobs | Trigger.dev | Schedules and fires reminders |
 | Notifications | Slack Incoming Webhook | Block Kit messages via webhook URL |
-| Hosting | Vercel | Auto-deploy from GitHub |
+| Hosting | Vercel | Auto-deploy from GitHub. Live at vigil-apr-2026.vercel.app |
 | DB Management | Supabase MCP | HTTP-based, configured in `.mcp.json` at project root |
 
 ---
@@ -439,7 +439,7 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 ### Completed (Day 3 Session 2)
 - [x] **Voice mode** — full hands-free conversation with `useVoiceMode` hook
 - [x] **View Transitions** — smooth cross-page navigation
-- [x] **Deploy to Vercel** — GitHub repo + Vercel auto-deploy on push
+- [x] **Deploy to Vercel** — GitHub repo + Vercel auto-deploy on push. Live and verified.
 
 ### Remaining Work
 - [ ] **Overview dashboard hydration fix** — add mounted state pattern for date-dependent rendering
