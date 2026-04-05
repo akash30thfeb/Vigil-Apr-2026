@@ -331,7 +331,7 @@ export default function LandingPage() {
           <div className="text-center mb-10">
             <div className="w-3 h-3 rounded-full bg-emerald-400 mx-auto mb-6 animate-pulse" />
             <h1 className="text-4xl font-semibold text-white tracking-tight mb-3">
-              ... I&apos;m listening ...
+              Listening...
             </h1>
             <p className="text-zinc-500 text-lg">
               Tell me what you bought, signed, or hired. I&apos;ll handle the rest.
