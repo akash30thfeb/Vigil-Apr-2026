@@ -1,7 +1,7 @@
 # Vigil — Project Context & Briefing
 > Read this before every Claude Code session.
 > This is the single source of truth for all architectural and product decisions.
-> Last updated: 5 April 2026
+> Last updated: 6 April 2026
 
 ---
 
@@ -372,7 +372,7 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 - 3 new Supabase migrations applied (004, 005, 006)
 - Full HR E2E pipeline tested and verified (conversation → DB → Trigger.dev → Slack)
 
-**Day 3 — Polish + demo prep** (MOSTLY COMPLETE)
+**Day 3 — Polish + demo prep** (COMPLETE)
 - Home page chat redesign — centered hero pre-conversation, proper chat container post-conversation
 - Editable records — RecordEditor component with two-column grid, type-aware fields, PATCH API
 - Reminder bell UI — animated bell icon with count badge, popover with urgency bars
@@ -393,7 +393,29 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 - Contracts + Assets flows tested and verified
 - Dynamic suggestion chips on landing page — randomized names/values, 6 complete prompts
 - Dark scrollbar styles
-- Pending: voice input (Web Speech API), overview dashboard hydration fix, deploy to Vercel
+- Voice mode (Web Speech API) — full hands-free conversation with persistent listening
+- View Transitions API — smooth cross-page navigation with fade animations
+- Deployed to Vercel via GitHub (auto-deploy on push)
+
+**Day 3 Session 2 — Voice mode + deploy** (6 April 2026)
+- **Voice mode (`useVoiceMode` hook)** — extracted all voice logic into a reusable hook consumed by both `page.tsx` and `ChatDrawer.tsx`. Features:
+  - Persistent listening with `continuous: true` + `interimResults: true`
+  - 3-second silence detection → auto-send transcript
+  - Wake words ("Hi Vigil", "Ok Vigil", "Hey Vigil") — stripped from transcript
+  - Sleep words ("stop voice mode", "pause listening") — deactivates without sending to API
+  - 60-second inactivity timeout → "Voice paused" message
+  - TTS output via `SpeechSynthesis` API (rate 1.25x) with Chrome AudioContext warm-up
+  - Mic stops during TTS to prevent self-hearing, resumes 400ms after TTS ends
+  - Rapid restart guard (max 3 rapid restarts → stop retrying) + 2s audio start timeout
+  - Voice mode persists across page transitions via sessionStorage
+- **VoiceButton component** — thin UI shell with 5 states: off (zinc), listening (emerald pulse), active-idle (emerald dim), speaking (emerald + "Tap to skip"), timed out (amber)
+- **View Transitions API** — `smoothNavigate()` / `smoothRefresh()` helpers wrap router with `document.startViewTransition()`. CSS fade-out 0.3s / fade-in 0.4s. Falls back on unsupported browsers.
+- **TTS-aware navigation** — after item logged, polls `isSpeakingRef` (ref, not state) to wait for TTS to finish before navigating. Cleanup no longer cancels speechSynthesis.
+- **Chat scroll fix** — scroll scoped to chat container div (`chatScrollRef.scrollTo`) instead of `scrollIntoView` on whole page
+- **Quick-action chips with icons** — "Log a new hire" (person+), "Add a contract" (document), "Track an asset" (laptop), "Update a record" (pencil). Inline SVG, 1.5px stroke, above the dynamic suggestion chips.
+- **Agent intro fix** — prompt updated so Vigil only introduces itself on pure greetings with no task. Skips intro when user mentions a task (e.g. "Hi, help me log a contract").
+- **Git + GitHub** — repo initialized, pushed to `github.com/akash30thfeb/Vigil-Apr-2026`
+- **Vercel deployment** — connected via GitHub for auto-deploy on push
 
 ---
 
@@ -414,11 +436,18 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 - [x] Phase 3: Assets — complete and tested
 - [ ] Phase 4: Drop legacy items columns after all departments tested
 
+### Completed (Day 3 Session 2)
+- [x] **Voice mode** — full hands-free conversation with `useVoiceMode` hook
+- [x] **View Transitions** — smooth cross-page navigation
+- [x] **Deploy to Vercel** — GitHub repo + Vercel auto-deploy on push
+
 ### Remaining Work
-- [ ] **Voice input** — Web Speech API (browser native). Mic button on chat input, transcribed text feeds into existing send(). Zero packages/API keys needed. Chrome/Edge only (fine for demo).
 - [ ] **Overview dashboard hydration fix** — add mounted state pattern for date-dependent rendering
-- [ ] **Agent-driven chips** (optional) — have agent return chips as structured data instead of client-side pattern matching. Eliminates all false-match bugs permanently. Trade-off: few extra tokens per response.
-- [ ] **Deploy to Vercel** — push to GitHub, set env vars, get live URL
+- [ ] **Auto-scroll on page transition** — scroll still jumps on hero→chat transition (scoped fix applied but transition layout shift still triggers it)
+- [ ] **Agent-driven chips** (optional) — have agent return chips as structured data instead of client-side pattern matching
+- [ ] **Voice barge-in** — true voice interruption requires server-side STT (Deepgram/Whisper). Not feasible with browser Web APIs alone.
+- [ ] **Voice selection UI** — let user pick TTS voice from browser voices. Currently hardcoded preference list.
+- [ ] **Cloud TTS upgrade** (optional) — replace browser SpeechSynthesis with ElevenLabs/OpenAI TTS for higher quality, consistent cross-browser voice
 - [ ] Classification Agent (stretch — silent server-side enrichment)
 - [ ] `purchase_date` NOT NULL migration for assets table (identified but not confirmed)
 
@@ -489,6 +518,11 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 - **Reminder bell**: ItemCard shows animated bell icon when reminders change (new reminder or status change). Animation stops after 5 seconds. Popover shows all reminders with urgency-colored bars.
 - **Record editor**: Two-column grid, expandable from ItemCard click. Supports text, date, number, select, boolean fields. Two-click save (Save → Confirm). Change tracking with amber asterisk.
 - **Smart redirect**: Uses `router.refresh()` when already on the correct department page (no scroll reset). Uses `router.push()` only when navigating to a different page.
+- **Voice mode**: Persistent hands-free conversation via `useVoiceMode` hook. Continuous recognition with 3s silence detection, wake/sleep keywords, TTS output (1.25x rate), 60s inactivity timeout. Mic pauses during TTS to prevent self-hearing. Voice state persists across page transitions via sessionStorage. VoiceButton has 5 visual states (off, listening, active-idle, speaking, timed out).
+- **View Transitions**: Cross-page navigation uses `document.startViewTransition()` for smooth fade. CSS: old page fades out 0.3s, new page fades in 0.4s. Falls back to normal navigation on unsupported browsers.
+- **TTS-aware navigation**: After logging an item, navigation polls a ref (`isSpeakingRef`) to wait for TTS to finish before page transition. Cleanup does not cancel speechSynthesis — TTS continues through navigation.
+- **Quick-action chips**: 4 static chips with inline SVG icons above the dynamic suggestion chips: "Log a new hire" (person+), "Add a contract" (document), "Track an asset" (laptop), "Update a record" (pencil).
+- **Agent intro behaviour**: Vigil only introduces itself on pure greetings with no task mentioned. If the user includes a task (e.g. "Hi, help me log a contract"), the intro is skipped entirely.
 
 ---
 
@@ -521,13 +555,17 @@ vigil/
 ├── trigger/
 │   └── reminders.ts                     ← Trigger.dev cron: reminderScan + sendReminder tasks
 ├── trigger.config.ts                    ← Trigger.dev project config
+├── hooks/
+│   └── useVoiceMode.ts                  ← voice mode hook (recognition, TTS, wake/sleep words, timeouts)
 ├── lib/
 │   ├── supabase.ts                      ← supabaseAdmin client
 │   ├── types.ts                         ← Zod schemas (per-type validation)
 │   ├── agent-prompts.ts                 ← Intake Agent system prompt
+│   ├── navigate.ts                      ← View Transitions helpers (smoothNavigate, smoothRefresh)
 │   └── slack.ts                         ← Slack incoming webhook helper (Block Kit messages)
 ├── components/
-│   ├── ChatDrawer.tsx                   ← persistent chat drawer (multiline input, ResponseChips, FormattedMessage)
+│   ├── ChatDrawer.tsx                   ← persistent chat drawer (multiline input, voice mode, ResponseChips, FormattedMessage)
+│   ├── VoiceButton.tsx                  ← thin UI shell for voice mode (5 visual states)
 │   ├── ItemCard.tsx                     ← item card with traffic light + reminder bell + popover
 │   ├── ItemList.tsx                     ← client wrapper for ItemCard with expand/collapse for RecordEditor
 │   ├── RecordEditor.tsx                 ← two-column inline record editor (text, date, number, select, boolean)
