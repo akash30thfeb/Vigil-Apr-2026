@@ -687,7 +687,12 @@ export async function POST(req: NextRequest) {
           const reminderRows = item.reminders.map((r) => {
             let fireAt: string | null = r.fire_at ?? null;
 
-            if (!fireAt && r.days_before != null && baseDate) {
+            if (fireAt) {
+              // Agent outputs times in IST — append offset so Date parses correctly on UTC servers (Vercel)
+              if (!/[Z+\-]\d/.test(fireAt)) {
+                fireAt = new Date(fireAt + "+05:30").toISOString();
+              }
+            } else if (r.days_before != null && baseDate) {
               const d = new Date(baseDate);
               d.setDate(d.getDate() - r.days_before);
               fireAt = d.toISOString();
@@ -759,7 +764,11 @@ export async function POST(req: NextRequest) {
             type: r.type ?? "custom",
             message: r.message,
             days_before: r.days_before ?? null,
-            fire_at: r.fire_at ? new Date(r.fire_at).toISOString() : null,
+            fire_at: r.fire_at
+              ? (/[Z+\-]\d/.test(r.fire_at)
+                  ? new Date(r.fire_at).toISOString()
+                  : new Date(r.fire_at + "+05:30").toISOString())
+              : null,
             status: "scheduled",
           }));
 
