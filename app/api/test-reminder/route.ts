@@ -23,7 +23,7 @@ async function handleTestReminder(req: NextRequest) {
     // Step 1: Get the reminder
     let reminderQuery = supabaseAdmin
       .from("reminders")
-      .select("id, type, message, fire_at, item_id, org_id, status");
+      .select("id, type, message, fire_at, item_id, org_id, status, recurrence");
 
     if (reminderId) {
       reminderQuery = reminderQuery.eq("id", reminderId);
@@ -78,10 +78,32 @@ async function handleTestReminder(req: NextRequest) {
     }
 
     // Step 5: Mark as sent + log notification
+    const now = new Date();
     await supabaseAdmin
       .from("reminders")
-      .update({ status: "sent", sent_at: new Date().toISOString() })
+      .update({ status: "sent", sent_at: now.toISOString() })
       .eq("id", reminder.id);
+
+    // Spawn next occurrence for recurring reminders
+    let nextFireAt: string | null = null;
+    if (reminder.recurrence) {
+      const base = new Date(reminder.fire_at) < now ? now : new Date(reminder.fire_at);
+      switch (reminder.recurrence) {
+        case "daily":   base.setDate(base.getDate() + 1); break;
+        case "weekly":  base.setDate(base.getDate() + 7); break;
+        case "monthly": base.setMonth(base.getMonth() + 1); break;
+      }
+      nextFireAt = base.toISOString();
+      await supabaseAdmin.from("reminders").insert({
+        item_id: reminder.item_id,
+        org_id: reminder.org_id,
+        type: reminder.type,
+        message: reminder.message,
+        fire_at: nextFireAt,
+        status: "scheduled",
+        recurrence: reminder.recurrence,
+      });
+    }
 
     await supabaseAdmin.from("notifications").insert({
       org_id: reminder.org_id,
@@ -90,7 +112,7 @@ async function handleTestReminder(req: NextRequest) {
       channel: "slack",
       message: reminder.message,
       body: reminder.message,
-      sent_at: new Date().toISOString(),
+      sent_at: now.toISOString(),
     });
 
     return NextResponse.json({
@@ -98,6 +120,8 @@ async function handleTestReminder(req: NextRequest) {
       reminder_id: reminder.id,
       item_name: item.name,
       message: reminder.message,
+      recurrence: reminder.recurrence ?? null,
+      next_fire_at: nextFireAt,
     });
   } catch (error) {
     console.error("/api/test-reminder error:", error);

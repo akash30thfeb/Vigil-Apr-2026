@@ -130,13 +130,15 @@ ITEM_DATA_START
       "type": "expiry_warning",
       "message": "James Okafor's probation ends in 2 weeks. Schedule a review meeting.",
       "days_before": 14,
-      "fire_at": null
+      "fire_at": null,
+      "recurrence": null
     },
     {
       "type": "anniversary",
       "message": "James Okafor's 1-year work anniversary is coming up.",
       "days_before": null,
-      "fire_at": "2027-01-15"
+      "fire_at": "2027-01-15",
+      "recurrence": null
     }
   ],
   "raw_log": "original user message verbatim",
@@ -166,13 +168,15 @@ ITEM_DATA_START
       "type": "custom",
       "message": "Offboarding reminder — James Okafor's last day is in 1 week.",
       "days_before": 7,
-      "fire_at": null
+      "fire_at": null,
+      "recurrence": null
     },
     {
       "type": "custom",
       "message": "Equipment return — collect James Okafor's devices.",
       "days_before": 0,
-      "fire_at": null
+      "fire_at": null,
+      "recurrence": null
     }
   ],
   "raw_log": "original user message verbatim",
@@ -243,19 +247,22 @@ ITEM_DATA_START
       "type": "renewal_warning",
       "message": "Salesforce CRM renews in 60 days — £42,000. Review usage and negotiate.",
       "days_before": 60,
-      "fire_at": null
+      "fire_at": null,
+      "recurrence": null
     },
     {
       "type": "renewal_warning",
       "message": "Salesforce CRM renews in 30 days. Final decision needed.",
       "days_before": 30,
-      "fire_at": null
+      "fire_at": null,
+      "recurrence": null
     },
     {
       "type": "renewal_warning",
       "message": "Salesforce CRM renews in 7 days. Act now if cancelling.",
       "days_before": 7,
-      "fire_at": null
+      "fire_at": null,
+      "recurrence": null
     }
   ],
   "raw_log": "original user message verbatim",
@@ -321,13 +328,15 @@ ITEM_DATA_START
       "type": "expiry_warning",
       "message": "MacBook Pro warranty expires in 30 days. Review AppleCare options.",
       "days_before": 30,
-      "fire_at": null
+      "fire_at": null,
+      "recurrence": null
     },
     {
       "type": "roi_checkin",
       "message": "3-month check-in: Is the MacBook Pro delivering value for Sarah Chen?",
       "days_before": null,
-      "fire_at": "2026-06-15"
+      "fire_at": "2026-06-15",
+      "recurrence": null
     }
   ],
   "raw_log": "original user message verbatim",
@@ -375,11 +384,24 @@ REMINDER_DATA_START
       "type": "custom",
       "message": "30-day check-in for Priya Sharma",
       "days_before": null,
-      "fire_at": "2026-05-07"
+      "fire_at": "2026-05-07",
+      "recurrence": null
     }
   ]
 }
 REMINDER_DATA_END
+
+RECURRING REMINDERS
+If the user asks for a reminder that should repeat (e.g. "daily standup reminder", "weekly contract review", "monthly compliance check"), set the "recurrence" field to "daily", "weekly", or "monthly". For one-time reminders, set recurrence to null.
+When suggesting or confirming a recurring reminder, always mention the frequency so the user knows it repeats — e.g. "I'll set a **daily** reminder to review pipeline reports."
+Example recurring reminder:
+{
+  "type": "custom",
+  "message": "Daily pipeline review — check reporting requirements",
+  "days_before": null,
+  "fire_at": "2026-04-09T09:00:00",
+  "recurrence": "daily"
+}
 
 Rules:
 - ITEM_DATA = creating or updating a record (fields + reminders together)

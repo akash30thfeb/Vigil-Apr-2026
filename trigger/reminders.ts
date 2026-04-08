@@ -60,7 +60,7 @@ export const sendReminder = task({
     const { data: reminder, error } = await supabaseAdmin
       .from("reminders")
       .select(`
-        id, type, message, fire_at, item_id, org_id, status,
+        id, type, message, fire_at, item_id, org_id, status, recurrence,
         items!inner (id, name, department, key_date, assigned_to_name)
       `)
       .eq("id", reminderId)
@@ -127,10 +127,30 @@ export const sendReminder = task({
     }
 
     // Mark reminder as sent
+    const now = new Date();
     await supabaseAdmin
       .from("reminders")
-      .update({ status: "sent", sent_at: new Date().toISOString() })
+      .update({ status: "sent", sent_at: now.toISOString() })
       .eq("id", reminderId);
+
+    // Spawn next occurrence for recurring reminders
+    if (reminder.recurrence) {
+      const base = new Date(reminder.fire_at) < now ? now : new Date(reminder.fire_at);
+      switch (reminder.recurrence) {
+        case "daily":   base.setDate(base.getDate() + 1); break;
+        case "weekly":  base.setDate(base.getDate() + 7); break;
+        case "monthly": base.setMonth(base.getMonth() + 1); break;
+      }
+      await supabaseAdmin.from("reminders").insert({
+        item_id: reminder.item_id,
+        org_id: reminder.org_id,
+        type: reminder.type,
+        message: reminder.message,
+        fire_at: base.toISOString(),
+        status: "scheduled",
+        recurrence: reminder.recurrence,
+      });
+    }
 
     // Log to notifications table
     await supabaseAdmin.from("notifications").insert({
@@ -140,7 +160,7 @@ export const sendReminder = task({
       channel: "slack",
       message: reminder.message,
       body: reminder.message,
-      sent_at: new Date().toISOString(),
+      sent_at: now.toISOString(),
     });
 
     return { success: true, reminderId, itemName: item.name };

@@ -15,6 +15,7 @@ export const ReminderSchema = z.object({
   message: z.string(),
   days_before: z.number().nullable().optional(),
   fire_at: z.string().nullable().optional(),
+  recurrence: z.enum(["daily", "weekly", "monthly"]).nullable().optional(),
 }).refine(
   (r) => r.days_before != null || r.fire_at != null,
   { message: "Each reminder must have days_before or fire_at" }

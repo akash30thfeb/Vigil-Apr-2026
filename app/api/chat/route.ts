@@ -706,6 +706,7 @@ export async function POST(req: NextRequest) {
               days_before: r.days_before ?? null,
               fire_at: fireAt,
               status: "scheduled",
+              recurrence: r.recurrence ?? null,
             };
           });
 
@@ -736,7 +737,7 @@ export async function POST(req: NextRequest) {
     if (rawReminderData) {
       const safeOrgId = orgId ?? "demo";
       const itemName: string = rawReminderData.item_name ?? "";
-      const reminders: { type: string; message: string; days_before?: number | null; fire_at?: string | null }[] =
+      const reminders: { type: string; message: string; days_before?: number | null; fire_at?: string | null; recurrence?: string | null }[] =
         rawReminderData.reminders ?? [];
 
       if (itemName && reminders.length > 0) {
@@ -770,6 +771,7 @@ export async function POST(req: NextRequest) {
                   : new Date(r.fire_at + "+05:30").toISOString())
               : null,
             status: "scheduled",
+            recurrence: r.recurrence ?? null,
           }));
 
           const { error: reminderError } = await supabaseAdmin
