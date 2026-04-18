@@ -290,16 +290,20 @@ async function publishHomeTab(userId: string) {
     {
       type: "context",
       elements: [
-        { type: "mrkdwn", text: "*Try saying:*" },
+        { type: "mrkdwn", text: "*Or try one of these:*" },
       ],
     },
-    {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: suggestions.map((s) => `\u{1f4ac} _${s}_`).join("\n"),
-      },
-    },
+    ...suggestions.map((s, i) => ({
+      type: "actions" as const,
+      elements: [
+        {
+          type: "button" as const,
+          text: { type: "plain_text" as const, text: `\u{1f4ac} ${s}`, emoji: true },
+          value: s,
+          action_id: `action_suggestion_${i}`,
+        },
+      ],
+    })),
     { type: "divider" },
     ...urgentBlocks,
     ...recentBlocks,
@@ -375,17 +379,20 @@ export async function POST(req: NextRequest) {
   }
 
   if (contentType.includes("application/x-www-form-urlencoded")) {
-    if (!verifySlackRequest(rawBody, timestamp, signature)) {
-      return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
-    }
-
     const params = new URLSearchParams(rawBody);
 
     // ---- Interactive payload (button clicks) ----
     const payloadStr = params.get("payload");
     if (payloadStr) {
+      // Verify signature for interactions
+      if (!verifySlackRequest(rawBody, timestamp, signature)) {
+        console.error("Interaction signature verification failed");
+        return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+      }
+
       try {
         const interaction = JSON.parse(payloadStr);
+        console.log("Interaction received:", interaction.type, interaction.actions?.[0]?.action_id);
 
         if (interaction.type === "block_actions") {
           const action = interaction.actions?.[0];
@@ -401,6 +408,11 @@ export async function POST(req: NextRequest) {
         console.error("Interaction parse error:", error);
         return new NextResponse("ok", { status: 200 });
       }
+    }
+
+    // Verify signature for slash commands
+    if (!verifySlackRequest(rawBody, timestamp, signature)) {
+      return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
 
     // ---- Slash command (/vigil) ----
