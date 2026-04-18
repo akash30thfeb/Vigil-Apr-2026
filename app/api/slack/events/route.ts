@@ -117,12 +117,27 @@ async function handleSlackMessage(
       replyText += `\n\n:bell: Reminders added for *${result.item_name}*.`;
     }
 
-    await slack.chat.postMessage({
-      channel,
-      // DMs: flat (no thread_ts). Channels: threaded.
-      thread_ts: isDM ? undefined : (threadTs ?? eventTs),
-      text: replyText,
-    });
+    if (isDM) {
+      // DMs: flat response with suggestion buttons
+      await slack.chat.postMessage({
+        channel,
+        text: replyText,
+        blocks: [
+          {
+            type: "section",
+            text: { type: "mrkdwn", text: replyText },
+          },
+          ...buildSuggestionBlocks(),
+        ],
+      });
+    } else {
+      // Channels: threaded, no suggestion buttons
+      await slack.chat.postMessage({
+        channel,
+        thread_ts: threadTs ?? eventTs,
+        text: replyText,
+      });
+    }
   } catch (error) {
     console.error("Slack message handling error:", error);
 
@@ -236,74 +251,66 @@ async function publishHomeTab(userId: string) {
     );
   }
 
-  // Dynamic suggestions
-  const suggestions = generateDynamicSuggestions();
-
   const blocks = [
+    // Centered logo
+    {
+      type: "image",
+      image_url: `${VIGIL_APP_URL}/icon-512.png`,
+      alt_text: "Vigil",
+    },
+    // App name and description — centered via context block
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: "*Vigil*",
+        },
+      ],
+    },
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "*\u{1f6e1}\ufe0f Vigil*\nAI-powered asset and contract tracking. Log and track employees, contracts, and IT assets \u2014 just by talking.",
-      },
-      accessory: {
-        type: "image",
-        image_url: `${VIGIL_APP_URL}/icon-512.png`,
-        alt_text: "Vigil",
+        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets — just by talking.",
       },
     },
     { type: "divider" },
+    // 4 suggestion chips — matching Policy Support Assistant style
     {
-      type: "section",
-      text: { type: "mrkdwn", text: "*Get started \u2014 tell me what to log:*" },
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Log a new hire", emoji: true },
+          value: "I'd like to log a new employee",
+          action_id: "action_log_employee",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Add a contract", emoji: true },
+          value: "I'd like to add a new contract",
+          action_id: "action_log_contract",
+        },
+      ],
     },
     {
       type: "actions",
       elements: [
         {
           type: "button",
-          text: { type: "plain_text", text: "\u{1f464} Log a new hire", emoji: true },
-          value: "I'd like to log a new employee",
-          action_id: "action_log_employee",
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "\u{1f4c4} Add a contract", emoji: true },
-          value: "I'd like to add a new contract",
-          action_id: "action_log_contract",
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "\u{1f4bb} Track an asset", emoji: true },
+          text: { type: "plain_text", text: "Track an asset", emoji: true },
           value: "I'd like to track a new IT asset",
           action_id: "action_log_asset",
         },
         {
           type: "button",
-          text: { type: "plain_text", text: "\u270f\ufe0f Update a record", emoji: true },
+          text: { type: "plain_text", text: "Update a record", emoji: true },
           value: "I'd like to update an existing record",
           action_id: "action_update_record",
         },
       ],
     },
-    { type: "divider" },
-    {
-      type: "context",
-      elements: [
-        { type: "mrkdwn", text: "*Or try one of these:*" },
-      ],
-    },
-    ...suggestions.map((s, i) => ({
-      type: "actions" as const,
-      elements: [
-        {
-          type: "button" as const,
-          text: { type: "plain_text" as const, text: `\u{1f4ac} ${s}`, emoji: true },
-          value: s,
-          action_id: `action_suggestion_${i}`,
-        },
-      ],
-    })),
     { type: "divider" },
     ...urgentBlocks,
     ...recentBlocks,
@@ -327,7 +334,44 @@ async function publishHomeTab(userId: string) {
   });
 }
 
-// Handle button click from Home tab — DM the user with the prompt
+// Build suggestion buttons to append to agent DM replies
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildSuggestionBlocks(): any[] {
+  return [
+    { type: "divider" },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Log a new hire", emoji: true },
+          value: "I'd like to log a new employee",
+          action_id: "dm_suggest_employee",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Add a contract", emoji: true },
+          value: "I'd like to add a new contract",
+          action_id: "dm_suggest_contract",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Track an asset", emoji: true },
+          value: "I'd like to track a new IT asset",
+          action_id: "dm_suggest_asset",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "Update a record", emoji: true },
+          value: "I'd like to update an existing record",
+          action_id: "dm_suggest_update",
+        },
+      ],
+    },
+  ];
+}
+
+// Handle button click from Home tab or DM suggestions — DM the user with the prompt
 async function handleButtonAction(userId: string, actionValue: string) {
   try {
     // Open a DM channel with the user
@@ -335,13 +379,40 @@ async function handleButtonAction(userId: string, actionValue: string) {
     const channel = dm.channel?.id;
     if (!channel) return;
 
-    // Send the prompt as a user-like message context, then process it
+    // Post the user's prompt first so it looks like they typed it
+    await slack.chat.postMessage({
+      channel,
+      text: actionValue,
+      // Post as the user would see it — shows what was clicked
+      blocks: [
+        {
+          type: "context",
+          elements: [
+            { type: "mrkdwn", text: `_${actionValue}_` },
+          ],
+        },
+      ],
+    });
+
+    // Process with the agent
     const messages: Message[] = [{ role: "user", content: actionValue }];
     const result = await processChat(messages, SLACK_VIGIL_ORG_ID, SLACK_VIGIL_USER_ID);
 
+    let replyText = result.message;
+    if (result.item_logged) {
+      replyText += `\n\n:white_check_mark: *${result.item_name}* logged to Vigil.`;
+    }
+
     await slack.chat.postMessage({
       channel,
-      text: result.message,
+      text: replyText,
+      blocks: [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: replyText },
+        },
+        ...buildSuggestionBlocks(),
+      ],
     });
   } catch (error) {
     console.error("Button action error:", error);
