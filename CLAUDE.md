@@ -2,7 +2,7 @@
 > Read this before every Claude Code session.
 > This is the single source of truth for all architectural and product decisions.
 > When updating this file, output a brief summary of what changed.
-> Last updated: 18 April 2026
+> Last updated: 18 April 2026 (Session 2)
 
 ---
 
@@ -302,9 +302,13 @@ Available tools: `execute_sql`, `apply_migration`, `list_tables`, `list_migratio
 ### Slack App Configuration (api.slack.com/apps — existing Vigil app)
 
 1. **Bot Token Scopes** (OAuth & Permissions): `chat:write`, `app_mentions:read`, `im:history`, `im:read`, `channels:history`
-2. **Event Subscriptions**: Request URL → `https://vigil-apr-2026.vercel.app/api/slack/events`. Subscribe to bot events: `app_mention`, `message.im`
+2. **Event Subscriptions**: Request URL → `https://vigil-apr-2026.vercel.app/api/slack/events`. Subscribe to bot events: `app_mention`, `message.im`, `app_home_opened`
 3. **Slash Commands**: `/vigil` → `https://vigil-apr-2026.vercel.app/api/slack/events`
-4. **Install to workspace** → grab bot token and signing secret
+4. **Interactivity & Shortcuts**: Toggle On → Request URL → `https://vigil-apr-2026.vercel.app/api/slack/events`
+5. **App Home**: Enable Home Tab. Enable "Allow users to send Slash commands and messages from the messages tab"
+6. **Install to workspace** → grab bot token and signing secret
+
+All three URLs (Events, Slash Commands, Interactivity) point to the same `/api/slack/events` route — it discriminates by content type and payload structure.
 
 ### How it works
 
@@ -369,7 +373,7 @@ Reminders support optional recurrence: `daily`, `weekly`, or `monthly` (column: 
 
 Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timezone offset. On localhost (IST timezone) this parsed correctly, but on Vercel (UTC server) it was stored as-is in UTC — 5.5 hours off.
 
-**Fix:** Before parsing `fire_at`, check if it already has a timezone indicator (`Z`, `+`, `-` followed by digit). If not, append `+05:30` so it's always interpreted as IST regardless of server timezone. Applied in both ITEM_DATA and REMINDER_DATA paths in `app/api/chat/route.ts`.
+**Fix:** Before parsing `fire_at`, check if it already has a timezone indicator (`Z`, `+`, `-` followed by digit). If not, append `+05:30` so it's always interpreted as IST regardless of server timezone. Applied in both ITEM_DATA and REMINDER_DATA paths in `lib/chat-engine.ts` (previously in `app/api/chat/route.ts`, moved during Slack bot refactor).
 
 ### Important: Trigger.dev schedule management
 
@@ -477,6 +481,28 @@ Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timez
 - **Git + GitHub** — repo initialized, pushed to `github.com/akash30thfeb/Vigil-Apr-2026`
 - **Vercel deployment** — connected via GitHub for auto-deploy on push
 
+**Day 4 — Slack bot integration** (18 April 2026)
+- Extracted shared `lib/chat-engine.ts` from `/api/chat/route.ts` — `processChat()` used by both web and Slack
+- `/api/chat/route.ts` slimmed from ~800 lines to ~30 lines (thin wrapper around chat-engine)
+- `lib/slack-verify.ts` — HMAC-SHA256 signing secret verification with 5-min replay protection
+- `app/api/slack/events/route.ts` — single route handling all Slack interactions:
+  - URL verification challenge (for Slack app setup)
+  - `app_mention` events (channel mentions, threaded responses)
+  - `message.im` events (DM conversations, flat responses)
+  - `/vigil` slash command (single-turn, async via `response_url`)
+  - `app_home_opened` event (renders Home tab with live data)
+  - `block_actions` interactions (button clicks → open DM conversation)
+- App Home tab with Block Kit UI: welcome, 4 quick-action buttons, dynamic suggestion buttons, urgent items from DB, recent items, dashboard link
+- DMs use flat (non-threaded) responses with `conversations.history` for multi-turn context
+- Channel mentions use threaded responses with `conversations.replies` for multi-turn context
+- `@vercel/functions` `waitUntil` for async processing within Slack's 3-second deadline
+- Slack retry deduplication via `x-slack-retry-num` header
+- Installed `@slack/web-api` and `@vercel/functions` packages
+- Added `/api/slack(.*)` to Clerk middleware public routes
+- Deployed to Vercel via GitHub auto-deploy
+- Slack app configured: bot scopes, event subscriptions, slash command, interactivity URL
+- Tested: DMs working, channel mentions working, Home tab rendering with live data
+
 ---
 
 ## Pending Tasks (carry over to next session)
@@ -501,11 +527,20 @@ Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timez
 - [x] **View Transitions** — smooth cross-page navigation
 - [x] **Deploy to Vercel** — GitHub repo + Vercel auto-deploy on push. Live and verified.
 
-### Completed (Session — 18 April 2026)
+### Completed (Session — 18 April 2026, Session 1)
 - [x] **Recurring reminders** — daily/weekly/monthly via spawn-next pattern (migration 008, Zod, agent prompt, trigger task, test endpoint). Committed locally, NOT pushed to Vercel yet.
 - [x] **Timezone fix for fire_at on Vercel** — bare IST datetimes now get `+05:30` appended before parsing. Deployed to Vercel.
 
+### Completed (Session — 18 April 2026, Session 2)
+- [x] **Slack bot** — full integration: DMs, channel mentions, `/vigil` slash command, App Home tab with live data + interactive buttons
+- [x] **Chat engine extraction** — `lib/chat-engine.ts` shared by web and Slack. `/api/chat/route.ts` is now a thin wrapper.
+- [x] **Flat DM responses** — Slack DMs respond inline (no threading), multi-turn via channel history
+- [x] **App Home tab** — Block Kit UI with quick-action buttons, dynamic suggestion buttons, urgent items, recent items, dashboard link
+- [x] **Interactive buttons** — Home tab buttons open DM and start conversation. Interactivity URL configured.
+- [x] **CONTEXT.md → CLAUDE.md rename** — project context file renamed
+
 ### Remaining Work
+- [ ] **Test Slack button clicks** — verify Home tab buttons and suggestion buttons open DM and start conversation
 - [ ] **Test recurring reminders** — create recurring reminder via chat, fire via `/api/test-reminder`, verify spawn-next creates new scheduled row. Then push to Vercel.
 - [ ] **Overview dashboard hydration fix** — add mounted state pattern for date-dependent rendering
 - [ ] **Auto-scroll on page transition** — scroll still jumps on hero→chat transition (scoped fix applied but transition layout shift still triggers it)
@@ -513,7 +548,8 @@ Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timez
 - [ ] **Voice barge-in** — true voice interruption requires server-side STT (Deepgram/Whisper). Not feasible with browser Web APIs alone.
 - [ ] **Voice selection UI** — let user pick TTS voice from browser voices. Currently hardcoded preference list.
 - [ ] **Cloud TTS upgrade** (optional) — replace browser SpeechSynthesis with ElevenLabs/OpenAI TTS for higher quality, consistent cross-browser voice
-- [x] **Slack bot** — Intake Agent as a Slack bot (`/vigil` slash command + `@Vigil` mentions + DMs, multi-turn via threads)
+- [ ] **Slack reply actions** — "done" → mark resolved, "snooze 2w" → reschedule reminder
+- [ ] **Slack token rotation** — advanced OAuth token security (requires redirect URL, best practice for production)
 - [ ] Classification Agent (stretch — silent server-side enrichment)
 - [ ] Phase 4: Drop legacy items columns after all departments tested
 - [ ] `purchase_date` NOT NULL migration for assets table (identified but not confirmed)
@@ -563,11 +599,28 @@ Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timez
 - REMINDER_DATA only worked for current-conversation items → expanded to any existing record
 - Hydration mismatch on ItemCard dates → fixed with mounted state pattern
 
+### Testing Results (Session — 18 April 2026, Session 2)
+
+#### Slack Bot Integration — PARTIALLY TESTED
+- DM conversations: WORKING — flat responses, multi-turn context from channel history
+- Channel mentions (`@Vigil`): WORKING — threaded responses in `#all-app-development`
+- `/vigil` slash command: configured, not yet tested
+- App Home tab: WORKING — renders with live data (urgent items, recent items, buttons, suggestions)
+- Home tab buttons: configured, testing in progress — interactivity URL set
+- Employee logged via Slack DM (Maya Ratnakar — Analytics Manager) — confirmed in DB + reminder created
+
+#### Issues Found & Fixed During Testing (Session — 18 April 2026, Session 2)
+- URL verification challenge failed on Vercel → moved challenge handler before signature verification (env vars weren't set yet during initial setup)
+- Bot not responding to `@Vigil` in channel → bot wasn't invited to channel. Fixed with `/invite @Vigil`
+- DM messages disabled → enabled "Allow users to send messages" in App Home settings
+- Home tab buttons showed "not configured for interactive responses" → set Interactivity URL in Slack dashboard
+- DM responses went into threads → changed to flat responses using `conversations.history` instead of `conversations.replies` for DMs
+
 ---
 
 ## UX Decisions
 
-- **Auth-first**: Middleware protects all routes except sign-in, sign-up, onboarding, /api/chat, /api/test-reminder
+- **Auth-first**: Middleware protects all routes except sign-in, sign-up, onboarding, /api/chat, /api/test-reminder, /api/slack
 - **Onboarding**: Collects department and role, saved to Clerk unsafeMetadata
 - **Onboarding check**: Done in dashboard layout server component (not middleware, to avoid JWT refresh issues)
 - **Chat drawer**: Persistent bottom-right, reads conversation from sessionStorage on mount. Multiline input (textarea with auto-grow, Shift+Enter for new line, Enter to send).
@@ -590,6 +643,10 @@ Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timez
 - **TTS-aware navigation**: After logging an item, navigation polls a ref (`isSpeakingRef`) to wait for TTS to finish before page transition. Cleanup does not cancel speechSynthesis — TTS continues through navigation.
 - **Quick-action chips**: 4 static chips with inline SVG icons above the dynamic suggestion chips: "Log a new hire" (person+), "Add a contract" (document), "Track an asset" (laptop), "Update a record" (pencil).
 - **Agent intro behaviour**: Vigil only introduces itself on pure greetings with no task mentioned. If the user includes a task (e.g. "Hi, help me log a contract"), the intro is skipped entirely.
+- **Slack DM behaviour**: Flat responses (no threading) in DMs — feels like a natural chat. Multi-turn context from recent channel history. Channel mentions use threads to avoid clutter.
+- **Slack Home tab**: Block Kit layout with live data. Quick-action buttons + dynamic suggestion buttons → clicking opens DM with Vigil. Traffic light summary of urgent items + recently logged items pulled from Supabase.
+- **Slack interactivity**: Button clicks handled via `block_actions` payload. Route parses `payload` field from URL-encoded body. Signature verified before processing.
+- **Slack 3-second deadline**: All Slack requests acknowledged with 200 immediately. Actual processing (Claude API call + DB writes) runs in background via `waitUntil` from `@vercel/functions`.
 
 ---
 
@@ -618,7 +675,7 @@ vigil/
 │       ├── chat/route.ts                ← web chat endpoint (thin wrapper around chat-engine)
 │       ├── items/route.ts               ← REST GET/POST for items
 │       ├── items/[id]/route.ts          ← GET/PATCH for record editing from dashboard
-│       ├── slack/events/route.ts        ← Slack bot (events, slash commands, multi-turn threads)
+│       ├── slack/events/route.ts        ← Slack bot (events, slash commands, interactions, App Home tab)
 │       └── test-reminder/route.ts       ← Manual Slack notification testing (bypasses Trigger.dev)
 ├── trigger/
 │   └── reminders.ts                     ← Trigger.dev cron: reminderScan + sendReminder tasks
@@ -666,15 +723,28 @@ Slack bot lets users talk to Vigil from inside Slack — not just receive alerts
 
 Architecture:
 - Raw Slack Web API (`@slack/web-api`) — no Bolt SDK. Keeps pattern consistent with existing Next.js API routes.
-- Single route: `/api/slack/events` handles URL verification, event callbacks (`app_mention`, `message`), and `/vigil` slash command
-- Multi-turn conversations via Slack threads — each reply fetches thread history via `conversations.replies`, maps to messages[], calls shared `processChat()` engine
-- Shared `lib/chat-engine.ts` — core chat logic (Anthropic call + ITEM_DATA/REMINDER_DATA parsing + DB writes) extracted from `/api/chat/route.ts`. Both web and Slack call it.
+- Single route: `/api/slack/events` handles URL verification, event callbacks (`app_mention`, `message`), `/vigil` slash command, and interactive payloads (button clicks)
+- Shared `lib/chat-engine.ts` — core chat logic (Anthropic call + ITEM_DATA/REMINDER_DATA parsing + DB writes) extracted from `/api/chat/route.ts`. Both web and Slack call it. `app/api/chat/route.ts` is now a thin ~30-line wrapper.
 - `lib/slack-verify.ts` — HMAC-SHA256 signing secret verification with replay protection
 - `@vercel/functions` `waitUntil` — acknowledges Slack within 3s, processes Claude call in background, posts reply via `chat.postMessage`
 - Deduplication — skips Slack retries via `x-slack-retry-num` header
 - Auth mapping — hardcoded `SLACK_VIGIL_ORG_ID` / `SLACK_VIGIL_USER_ID` env vars for demo (production would use a mapping table)
 - #vigil-alerts remains for outbound reminder notifications (existing webhook)
-- Reply handling: "done" → mark resolved, "snooze 2w" → reschedule (stretch — not yet implemented)
+
+Conversation behaviour:
+- **DMs (Messages tab)**: Flat responses (no threading). Multi-turn context built from recent channel history via `conversations.history`. Feels like a natural 1:1 chat.
+- **Channel mentions (`@Vigil`)**: Threaded responses to avoid cluttering shared channels. Multi-turn via `conversations.replies` within the thread.
+- **`/vigil` slash command**: Single-turn. Acknowledges immediately, posts response via `response_url`.
+
+App Home tab:
+- Renders on `app_home_opened` event via `views.publish`
+- Shows: welcome description, 4 quick-action buttons (Log a new hire, Add a contract, Track an asset, Update a record), dynamic "Try saying" suggestion buttons (randomized prompts matching web app style), traffic light summary of urgent items from DB, recently logged items, footer with usage tips + link to web dashboard
+- Button clicks open a DM with Vigil and start the conversation via `handleButtonAction`
+- Requires Interactivity URL set to `/api/slack/events` in Slack app dashboard
+
+Not yet implemented:
+- Reply handling: "done" → mark resolved, "snooze 2w" → reschedule
+- Slack bot can't fully replicate web app UI (dashboards, record editing) — Block Kit is layout-limited. Buttons link out to Vercel for dashboard access.
 
 ### Priority 2 — Classification Agent (Fern)
 Silent server-side enrichment after intake agent. Runs post-save.
