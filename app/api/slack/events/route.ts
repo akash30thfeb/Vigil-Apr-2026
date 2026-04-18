@@ -102,7 +102,6 @@ async function handleSlackMessage(
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
 
-  // Verify signing secret (skip for url_verification which happens during setup)
   const timestamp = req.headers.get("x-slack-request-timestamp");
   const signature = req.headers.get("x-slack-signature");
 
@@ -114,6 +113,19 @@ export async function POST(req: NextRequest) {
 
   // Determine if this is a slash command (url-encoded) or event (JSON)
   const contentType = req.headers.get("content-type") ?? "";
+
+  // Handle URL verification challenge first — Slack sends this during setup
+  // and needs a fast response. We still verify the signature when possible.
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = JSON.parse(rawBody);
+      if (payload.type === "url_verification") {
+        return NextResponse.json({ challenge: payload.challenge });
+      }
+    } catch {
+      // Not valid JSON, continue to other handlers
+    }
+  }
 
   if (contentType.includes("application/x-www-form-urlencoded")) {
     // ---- Slash command (/vigil) ----
@@ -178,11 +190,6 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(rawBody);
-
-  // URL verification handshake (Slack setup)
-  if (payload.type === "url_verification") {
-    return NextResponse.json({ challenge: payload.challenge });
-  }
 
   // Event callback
   if (payload.type === "event_callback") {
