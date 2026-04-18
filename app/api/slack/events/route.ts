@@ -260,7 +260,7 @@ async function publishHomeTab(userId: string) {
   const suggestions = generateDynamicSuggestions();
 
   const blocks = [
-    // Disclaimer — matches Policy Support Assistant style
+    // Disclaimer
     {
       type: "context",
       elements: [
@@ -271,27 +271,23 @@ async function publishHomeTab(userId: string) {
       ],
     },
     { type: "divider" },
-    // App icon (small, via context block) + name
+    // Centered agent icon (128px — sized to match Policy Support Assistant)
     {
-      type: "context",
-      elements: [
-        {
-          type: "image",
-          image_url: `${VIGIL_APP_URL}/icon-512.png`,
-          alt_text: "Vigil",
-        },
-        {
-          type: "mrkdwn",
-          text: "  *Vigil*",
-        },
-      ],
+      type: "image",
+      image_url: `${VIGIL_APP_URL}/icon-128.png`,
+      alt_text: "Vigil",
     },
-    // Description
+    // Centered app name
+    {
+      type: "header",
+      text: { type: "plain_text", text: "Vigil", emoji: true },
+    },
+    // Long description
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets \u2014 just by talking.",
+        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets \u2014 just by talking. Vigil automatically creates workflows, reminders, and notifications so your team never misses a renewal, warranty expiry, or onboarding milestone.",
       },
     },
     { type: "divider" },
