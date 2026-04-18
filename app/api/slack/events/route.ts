@@ -256,104 +256,51 @@ async function publishHomeTab(userId: string) {
     );
   }
 
-  // Dynamic suggestions
-  const suggestions = generateDynamicSuggestions();
+  // Count totals for summary
+  const { count: totalItems } = await supabaseAdmin
+    .from("items")
+    .select("*", { count: "exact", head: true })
+    .eq("org_id", SLACK_VIGIL_ORG_ID);
+
+  const { count: activeReminders } = await supabaseAdmin
+    .from("reminders")
+    .select("*", { count: "exact", head: true })
+    .eq("status", "scheduled");
 
   const blocks = [
-    // Disclaimer
-    {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: "\u{2139}\ufe0f This tool uses generative AI, which can produce inaccurate responses. Review for accuracy before acting on any output.",
-        },
-      ],
-    },
-    { type: "divider" },
-    // Centered agent icon (128px — sized to match Policy Support Assistant)
-    {
-      type: "image",
-      image_url: `${VIGIL_APP_URL}/icon-128.png`,
-      alt_text: "Vigil",
-    },
-    // Centered app name
+    // Dashboard header
     {
       type: "header",
-      text: { type: "plain_text", text: "Vigil", emoji: true },
+      text: { type: "plain_text", text: "\u{1f4ca} Dashboard", emoji: true },
     },
-    // Long description
+    // Summary stats
     {
       type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets \u2014 just by talking. Vigil automatically creates workflows, reminders, and notifications so your team never misses a renewal, warranty expiry, or onboarding milestone.",
-      },
-    },
-    { type: "divider" },
-    // 4 suggestion chips — 2x2 layout
-    {
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Log a new hire", emoji: true },
-          value: "I'd like to log a new employee",
-          action_id: "action_log_employee",
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Add a contract", emoji: true },
-          value: "I'd like to add a new contract",
-          action_id: "action_log_contract",
-        },
+      fields: [
+        { type: "mrkdwn", text: `*Total Records*\n${totalItems ?? 0}` },
+        { type: "mrkdwn", text: `*Active Reminders*\n${activeReminders ?? 0}` },
+        { type: "mrkdwn", text: `*Needs Attention*\n${urgentItems?.length ?? 0}` },
+        { type: "mrkdwn", text: `*Logged This Week*\n${recentItems?.length ?? 0}` },
       ],
     },
-    {
-      type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Track an asset", emoji: true },
-          value: "I'd like to track a new IT asset",
-          action_id: "action_log_asset",
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Update a record", emoji: true },
-          value: "I'd like to update an existing record",
-          action_id: "action_update_record",
-        },
-      ],
-    },
-    { type: "divider" },
-    // Dynamic "Try saying" suggestions
-    {
-      type: "context",
-      elements: [
-        { type: "mrkdwn", text: "*Or try one of these:*" },
-      ],
-    },
-    ...suggestions.map((s, i) => ({
-      type: "actions" as const,
-      elements: [
-        {
-          type: "button" as const,
-          text: { type: "plain_text" as const, text: `\u{1f4ac} ${s}`, emoji: true },
-          value: s,
-          action_id: `action_suggestion_${i}`,
-        },
-      ],
-    })),
     { type: "divider" },
     ...urgentBlocks,
     ...recentBlocks,
     {
-      type: "context",
+      type: "actions",
       elements: [
         {
-          type: "mrkdwn",
-          text: `\u{1f4ac} DM me or \`@Vigil\` in any channel  \u2022  \u2328\ufe0f \`/vigil\` slash command  \u2022  <${VIGIL_APP_URL}/dashboard|Open Dashboard>`,
+          type: "button",
+          text: { type: "plain_text", text: "\u{1f4ac} New Chat", emoji: true },
+          value: "start_chat",
+          action_id: "action_new_chat",
+          style: "primary",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "\u{1f310} Open Dashboard", emoji: true },
+          url: `${VIGIL_APP_URL}/dashboard`,
+          action_id: "action_open_dashboard",
         },
       ],
     },
