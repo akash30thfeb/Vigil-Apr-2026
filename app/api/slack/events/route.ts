@@ -3,12 +3,14 @@ import { WebClient } from "@slack/web-api";
 import { waitUntil } from "@vercel/functions";
 import { verifySlackRequest } from "@/lib/slack-verify";
 import { processChat } from "@/lib/chat-engine";
+import { supabaseAdmin } from "@/lib/supabase";
 import type { Message } from "@/lib/chat-engine";
 
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
 
 const SLACK_VIGIL_ORG_ID = process.env.SLACK_VIGIL_ORG_ID ?? "demo";
 const SLACK_VIGIL_USER_ID = process.env.SLACK_VIGIL_USER_ID ?? "slack-bot";
+const VIGIL_APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://vigil-apr-2026.vercel.app";
 
 // Strip bot mention from message text (e.g. "<@U12345> log a contract" → "log a contract")
 function stripMention(text: string): string {
@@ -93,6 +95,127 @@ async function handleSlackMessage(
       text: "Sorry, I ran into an issue processing that. Please try again.",
     }).catch(() => {}); // Don't throw if error message fails
   }
+}
+
+// Publish the App Home tab for a user
+async function publishHomeTab(userId: string) {
+  // Fetch upcoming items (next 30 days) for the traffic light summary
+  const now = new Date();
+  const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+  const { data: urgentItems } = await supabaseAdmin
+    .from("items")
+    .select("name, type, department, key_date")
+    .eq("org_id", SLACK_VIGIL_ORG_ID)
+    .not("key_date", "is", null)
+    .lte("key_date", in30Days.toISOString().split("T")[0])
+    .order("key_date", { ascending: true })
+    .limit(5);
+
+  const { data: recentItems } = await supabaseAdmin
+    .from("items")
+    .select("name, type, department, created_at")
+    .eq("org_id", SLACK_VIGIL_ORG_ID)
+    .order("created_at", { ascending: false })
+    .limit(5);
+
+  // Build urgent items section
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const urgentBlocks: any[] = [];
+  if (urgentItems && urgentItems.length > 0) {
+    const lines = urgentItems.map((item) => {
+      const daysLeft = item.key_date
+        ? Math.ceil((new Date(item.key_date).getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+        : null;
+      const emoji = daysLeft === null ? "\u{1f514}" : daysLeft < 0 ? "\u{1f6a8}" : daysLeft <= 7 ? "\u{1f534}" : daysLeft <= 30 ? "\u{1f7e0}" : "\u{1f7e2}";
+      const status = daysLeft === null ? "" : daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : `${daysLeft}d remaining`;
+      return `${emoji}  *${item.name}* — ${item.department?.toUpperCase()} — ${status}`;
+    });
+
+    urgentBlocks.push(
+      { type: "header", text: { type: "plain_text", text: "\u{26a0}\u{fe0f} Needs Attention", emoji: true } },
+      { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
+      { type: "divider" }
+    );
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recentBlocks: any[] = [];
+  if (recentItems && recentItems.length > 0) {
+    const lines = recentItems.map((item) => {
+      const typeEmoji = item.type === "employee" ? "\u{1f464}" : item.type === "asset" ? "\u{1f4bb}" : "\u{1f4c4}";
+      const date = new Date(item.created_at).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" });
+      return `${typeEmoji}  *${item.name}* — ${date}`;
+    });
+
+    recentBlocks.push(
+      { type: "header", text: { type: "plain_text", text: "\u{1f4cb} Recently Logged", emoji: true } },
+      { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
+      { type: "divider" }
+    );
+  }
+
+  const blocks = [
+    {
+      type: "header",
+      text: { type: "plain_text", text: "\u{1f6e1}\u{fe0f} Vigil", emoji: true },
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets — just by talking.",
+      },
+    },
+    { type: "divider" },
+    {
+      type: "section",
+      text: { type: "mrkdwn", text: "*Get started — tell me what to log:*" },
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: { type: "plain_text", text: "\u{1f464} Log a new hire", emoji: true },
+          value: "log_employee",
+          action_id: "action_log_employee",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "\u{1f4c4} Add a contract", emoji: true },
+          value: "log_contract",
+          action_id: "action_log_contract",
+        },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "\u{1f4bb} Track an asset", emoji: true },
+          value: "log_asset",
+          action_id: "action_log_asset",
+        },
+      ],
+    },
+    { type: "divider" },
+    ...urgentBlocks,
+    ...recentBlocks,
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `\u{1f4ac} DM me or \`@Vigil\` in any channel  \u{2022}  \u{2328}\u{fe0f} \`/vigil\` slash command  \u{2022}  <${VIGIL_APP_URL}/dashboard|Open Dashboard>`,
+        },
+      ],
+    },
+  ];
+
+  await slack.views.publish({
+    user_id: userId,
+    view: {
+      type: "home",
+      blocks,
+    },
+  });
 }
 
 // ============================================================
@@ -197,6 +320,12 @@ export async function POST(req: NextRequest) {
 
     // Ignore bot's own messages
     if (event.bot_id || event.subtype === "bot_message") {
+      return new NextResponse("ok", { status: 200 });
+    }
+
+    // Handle App Home tab opened
+    if (event.type === "app_home_opened") {
+      waitUntil(publishHomeTab(event.user));
       return new NextResponse("ok", { status: 200 });
     }
 
