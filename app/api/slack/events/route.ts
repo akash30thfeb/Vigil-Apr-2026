@@ -31,7 +31,6 @@ async function buildThreadMessages(
 
   const messages: Message[] = [];
   for (const msg of result.messages ?? []) {
-    // Skip the thread parent if it's a bot message with no user text
     const isBot = msg.bot_id || msg.user === botUserId;
     const text = stripMention(msg.text ?? "");
     if (!text) continue;
@@ -45,25 +44,64 @@ async function buildThreadMessages(
   return messages;
 }
 
+// Build messages from recent DM channel history (flat conversation, no threads)
+async function buildDMHistory(
+  channel: string,
+  botUserId: string
+): Promise<Message[]> {
+  const result = await slack.conversations.history({
+    channel,
+    limit: 20,
+  });
+
+  const messages: Message[] = [];
+  for (const msg of (result.messages ?? []).reverse()) {
+    // Skip subtypes like channel_join, bot_add, etc
+    if (msg.subtype && msg.subtype !== "bot_message") continue;
+    const isBot = msg.bot_id || msg.user === botUserId;
+    const text = stripMention(msg.text ?? "");
+    if (!text) continue;
+
+    messages.push({
+      role: isBot ? "assistant" : "user",
+      content: text,
+    });
+  }
+
+  return messages;
+}
+
+// Detect if a channel is a DM (im) by checking channel type
+async function isDMChannel(channel: string): Promise<boolean> {
+  try {
+    const info = await slack.conversations.info({ channel });
+    return info.channel?.is_im === true;
+  } catch {
+    return false;
+  }
+}
+
 // Process a Slack event and post the agent's reply
 async function handleSlackMessage(
   channel: string,
   text: string,
   threadTs: string | undefined,
   eventTs: string,
-  botUserId: string
+  botUserId: string,
+  channelType: string
 ) {
   try {
-    // The thread_ts to reply in — use existing thread or start a new one
-    const replyThreadTs = threadTs ?? eventTs;
-
+    const isDM = channelType === "im";
     let messages: Message[];
 
-    if (threadTs) {
-      // Multi-turn: fetch full thread history
+    if (isDM) {
+      // DMs: flat conversation — fetch recent channel history for context
+      messages = await buildDMHistory(channel, botUserId);
+    } else if (threadTs) {
+      // Channel thread reply: fetch thread history
       messages = await buildThreadMessages(channel, threadTs, botUserId);
     } else {
-      // Single turn: just the user's message
+      // Channel first message: single turn
       messages = [{ role: "user", content: stripMention(text) }];
     }
 
@@ -81,25 +119,69 @@ async function handleSlackMessage(
 
     await slack.chat.postMessage({
       channel,
-      thread_ts: replyThreadTs,
+      // DMs: flat (no thread_ts). Channels: threaded.
+      thread_ts: isDM ? undefined : (threadTs ?? eventTs),
       text: replyText,
     });
   } catch (error) {
     console.error("Slack message handling error:", error);
 
-    // Post error message back to the thread so user isn't left hanging
-    const replyThreadTs = threadTs ?? eventTs;
     await slack.chat.postMessage({
       channel,
-      thread_ts: replyThreadTs,
+      thread_ts: channelType === "im" ? undefined : (threadTs ?? eventTs),
       text: "Sorry, I ran into an issue processing that. Please try again.",
-    }).catch(() => {}); // Don't throw if error message fails
+    }).catch(() => {});
   }
 }
 
-// Publish the App Home tab for a user
+// ============================================================
+// Dynamic suggestion chips (matching web app)
+// ============================================================
+
+const PEOPLE = [
+  "Priya Sharma", "James Okafor", "Aisha Patel", "Marcus Chen",
+  "Sofia Rodriguez", "Daniel Kim", "Fatima Al-Rashid", "Tom Bradley",
+];
+const DEPT_ROLES = [
+  { dept: "Engineering", role: "Software Engineer" },
+  { dept: "Data Science", role: "ML Engineer" },
+  { dept: "Data Analytics", role: "Data Analyst" },
+  { dept: "IT", role: "Systems Administrator" },
+  { dept: "Sales", role: "Account Executive" },
+];
+const CONTRACTS = [
+  { name: "Datadog APM", vendor: "Datadog", value: "18,000" },
+  { name: "Jira Cloud", vendor: "Atlassian", value: "9,600" },
+  { name: "HubSpot CRM", vendor: "HubSpot", value: "24,000" },
+];
+const ASSETS = [
+  { name: "MacBook Pro 16-inch", vendor: "Apple", price: "2,499" },
+  { name: "ThinkPad X1 Carbon", vendor: "Lenovo", price: "1,899" },
+  { name: "Dell XPS 15", vendor: "Dell", price: "1,750" },
+];
+
+function pick<T>(arr: T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function generateDynamicSuggestions(): string[] {
+  const p1 = pick(PEOPLE);
+  const dr = pick(DEPT_ROLES);
+  const c = pick(CONTRACTS);
+  const a = pick(ASSETS);
+
+  return [
+    `${p1} is joining ${dr.dept} as a ${dr.role} next Monday`,
+    `Log the ${c.name} contract with ${c.vendor} — \u00a3${c.value}/year`,
+    `New ${a.name} from ${a.vendor}, \u00a3${a.price}, purchased today`,
+  ];
+}
+
+// ============================================================
+// App Home tab
+// ============================================================
+
 async function publishHomeTab(userId: string) {
-  // Fetch upcoming items (next 30 days) for the traffic light summary
   const now = new Date();
   const in30Days = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
@@ -119,7 +201,6 @@ async function publishHomeTab(userId: string) {
     .order("created_at", { ascending: false })
     .limit(5);
 
-  // Build urgent items section
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const urgentBlocks: any[] = [];
   if (urgentItems && urgentItems.length > 0) {
@@ -129,11 +210,11 @@ async function publishHomeTab(userId: string) {
         : null;
       const emoji = daysLeft === null ? "\u{1f514}" : daysLeft < 0 ? "\u{1f6a8}" : daysLeft <= 7 ? "\u{1f534}" : daysLeft <= 30 ? "\u{1f7e0}" : "\u{1f7e2}";
       const status = daysLeft === null ? "" : daysLeft < 0 ? `${Math.abs(daysLeft)}d overdue` : `${daysLeft}d remaining`;
-      return `${emoji}  *${item.name}* — ${item.department?.toUpperCase()} — ${status}`;
+      return `${emoji}  *${item.name}* \u2014 ${item.department?.toUpperCase()} \u2014 ${status}`;
     });
 
     urgentBlocks.push(
-      { type: "header", text: { type: "plain_text", text: "\u{26a0}\u{fe0f} Needs Attention", emoji: true } },
+      { type: "header", text: { type: "plain_text", text: "\u26a0\ufe0f Needs Attention", emoji: true } },
       { type: "section", text: { type: "mrkdwn", text: lines.join("\n") } },
       { type: "divider" }
     );
@@ -145,7 +226,7 @@ async function publishHomeTab(userId: string) {
     const lines = recentItems.map((item) => {
       const typeEmoji = item.type === "employee" ? "\u{1f464}" : item.type === "asset" ? "\u{1f4bb}" : "\u{1f4c4}";
       const date = new Date(item.created_at).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", day: "numeric", month: "short" });
-      return `${typeEmoji}  *${item.name}* — ${date}`;
+      return `${typeEmoji}  *${item.name}* \u2014 ${date}`;
     });
 
     recentBlocks.push(
@@ -155,22 +236,26 @@ async function publishHomeTab(userId: string) {
     );
   }
 
+  // Dynamic suggestions
+  const suggestions = generateDynamicSuggestions();
+
   const blocks = [
-    {
-      type: "header",
-      text: { type: "plain_text", text: "\u{1f6e1}\u{fe0f} Vigil", emoji: true },
-    },
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets — just by talking.",
+        text: "*\u{1f6e1}\ufe0f Vigil*\nAI-powered asset and contract tracking. Log and track employees, contracts, and IT assets \u2014 just by talking.",
+      },
+      accessory: {
+        type: "image",
+        image_url: `${VIGIL_APP_URL}/icon-512.png`,
+        alt_text: "Vigil",
       },
     },
     { type: "divider" },
     {
       type: "section",
-      text: { type: "mrkdwn", text: "*Get started — tell me what to log:*" },
+      text: { type: "mrkdwn", text: "*Get started \u2014 tell me what to log:*" },
     },
     {
       type: "actions",
@@ -178,22 +263,42 @@ async function publishHomeTab(userId: string) {
         {
           type: "button",
           text: { type: "plain_text", text: "\u{1f464} Log a new hire", emoji: true },
-          value: "log_employee",
+          value: "I'd like to log a new employee",
           action_id: "action_log_employee",
         },
         {
           type: "button",
           text: { type: "plain_text", text: "\u{1f4c4} Add a contract", emoji: true },
-          value: "log_contract",
+          value: "I'd like to add a new contract",
           action_id: "action_log_contract",
         },
         {
           type: "button",
           text: { type: "plain_text", text: "\u{1f4bb} Track an asset", emoji: true },
-          value: "log_asset",
+          value: "I'd like to track a new IT asset",
           action_id: "action_log_asset",
         },
+        {
+          type: "button",
+          text: { type: "plain_text", text: "\u270f\ufe0f Update a record", emoji: true },
+          value: "I'd like to update an existing record",
+          action_id: "action_update_record",
+        },
       ],
+    },
+    { type: "divider" },
+    {
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: "*Try saying:*" },
+      ],
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: suggestions.map((s) => `\u{1f4ac} _${s}_`).join("\n"),
+      },
     },
     { type: "divider" },
     ...urgentBlocks,
@@ -203,7 +308,7 @@ async function publishHomeTab(userId: string) {
       elements: [
         {
           type: "mrkdwn",
-          text: `\u{1f4ac} DM me or \`@Vigil\` in any channel  \u{2022}  \u{2328}\u{fe0f} \`/vigil\` slash command  \u{2022}  <${VIGIL_APP_URL}/dashboard|Open Dashboard>`,
+          text: `\u{1f4ac} DM me or \`@Vigil\` in any channel  \u2022  \u2328\ufe0f \`/vigil\` slash command  \u2022  <${VIGIL_APP_URL}/dashboard|Open Dashboard>`,
         },
       ],
     },
@@ -218,8 +323,29 @@ async function publishHomeTab(userId: string) {
   });
 }
 
+// Handle button click from Home tab — DM the user with the prompt
+async function handleButtonAction(userId: string, actionValue: string) {
+  try {
+    // Open a DM channel with the user
+    const dm = await slack.conversations.open({ users: userId });
+    const channel = dm.channel?.id;
+    if (!channel) return;
+
+    // Send the prompt as a user-like message context, then process it
+    const messages: Message[] = [{ role: "user", content: actionValue }];
+    const result = await processChat(messages, SLACK_VIGIL_ORG_ID, SLACK_VIGIL_USER_ID);
+
+    await slack.chat.postMessage({
+      channel,
+      text: result.message,
+    });
+  } catch (error) {
+    console.error("Button action error:", error);
+  }
+}
+
 // ============================================================
-// POST handler — receives all Slack events and slash commands
+// POST handler — receives all Slack events, slash commands, and interactions
 // ============================================================
 
 export async function POST(req: NextRequest) {
@@ -234,11 +360,9 @@ export async function POST(req: NextRequest) {
     return new NextResponse("ok", { status: 200 });
   }
 
-  // Determine if this is a slash command (url-encoded) or event (JSON)
   const contentType = req.headers.get("content-type") ?? "";
 
-  // Handle URL verification challenge first — Slack sends this during setup
-  // and needs a fast response. We still verify the signature when possible.
+  // Handle URL verification challenge first
   if (contentType.includes("application/json")) {
     try {
       const payload = JSON.parse(rawBody);
@@ -246,29 +370,50 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ challenge: payload.challenge });
       }
     } catch {
-      // Not valid JSON, continue to other handlers
+      // Not valid JSON, continue
     }
   }
 
   if (contentType.includes("application/x-www-form-urlencoded")) {
-    // ---- Slash command (/vigil) ----
     if (!verifySlackRequest(rawBody, timestamp, signature)) {
       return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
     }
 
     const params = new URLSearchParams(rawBody);
+
+    // ---- Interactive payload (button clicks) ----
+    const payloadStr = params.get("payload");
+    if (payloadStr) {
+      try {
+        const interaction = JSON.parse(payloadStr);
+
+        if (interaction.type === "block_actions") {
+          const action = interaction.actions?.[0];
+          const userId = interaction.user?.id;
+
+          if (action && userId) {
+            waitUntil(handleButtonAction(userId, action.value));
+          }
+        }
+
+        return new NextResponse("ok", { status: 200 });
+      } catch (error) {
+        console.error("Interaction parse error:", error);
+        return new NextResponse("ok", { status: 200 });
+      }
+    }
+
+    // ---- Slash command (/vigil) ----
     const text = params.get("text") ?? "";
-    const channelId = params.get("channel_id") ?? "";
     const responseUrl = params.get("response_url") ?? "";
 
     if (!text.trim()) {
       return NextResponse.json({
         response_type: "ephemeral",
-        text: "Hi! Tell me what you'd like to log. For example:\n`/vigil Log a new MacBook Pro assigned to Sarah Chen, purchased today for £2,400`",
+        text: "Hi! Tell me what you'd like to log. For example:\n`/vigil Log a new MacBook Pro assigned to Sarah Chen, purchased today for \u00a32,400`",
       });
     }
 
-    // Acknowledge immediately, process in background
     waitUntil(
       (async () => {
         try {
@@ -280,7 +425,6 @@ export async function POST(req: NextRequest) {
             replyText += `\n\n:white_check_mark: *${result.item_name}* logged to Vigil.`;
           }
 
-          // Post back via response_url (visible to channel)
           await fetch(responseUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -303,7 +447,6 @@ export async function POST(req: NextRequest) {
       })()
     );
 
-    // Return 200 immediately (Slack requires < 3s response)
     return new NextResponse(null, { status: 200 });
   }
 
@@ -314,7 +457,6 @@ export async function POST(req: NextRequest) {
 
   const payload = JSON.parse(rawBody);
 
-  // Event callback
   if (payload.type === "event_callback") {
     const event = payload.event;
 
@@ -331,18 +473,17 @@ export async function POST(req: NextRequest) {
 
     // Handle app_mention and direct messages
     if (event.type === "app_mention" || event.type === "message") {
-      // Get bot's own user ID to filter in thread history
       const authResult = await slack.auth.test();
       const botUserId = authResult.user_id ?? "";
 
-      // Acknowledge immediately, process in background
       waitUntil(
         handleSlackMessage(
           event.channel,
           event.text ?? "",
           event.thread_ts,
           event.ts,
-          botUserId
+          botUserId,
+          event.channel_type ?? ""
         )
       );
 
