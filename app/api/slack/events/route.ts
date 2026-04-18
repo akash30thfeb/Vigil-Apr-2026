@@ -4,6 +4,7 @@ import { waitUntil } from "@vercel/functions";
 import { verifySlackRequest } from "@/lib/slack-verify";
 import { processChat } from "@/lib/chat-engine";
 import { supabaseAdmin } from "@/lib/supabase";
+import { getChips } from "@/lib/response-chips";
 import type { Message } from "@/lib/chat-engine";
 
 const slack = new WebClient(process.env.SLACK_BOT_TOKEN);
@@ -255,12 +256,37 @@ async function publishHomeTab(userId: string) {
     );
   }
 
+  // Dynamic suggestions
+  const suggestions = generateDynamicSuggestions();
+
   const blocks = [
-    // Centered app name (header blocks are centered in Home tab)
+    // Disclaimer — matches Policy Support Assistant style
     {
-      type: "header",
-      text: { type: "plain_text", text: "\u{1f6e1}\ufe0f Vigil", emoji: true },
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: "\u{2139}\ufe0f This tool uses generative AI, which can produce inaccurate responses. Review for accuracy before acting on any output.",
+        },
+      ],
     },
+    { type: "divider" },
+    // App icon (small, via context block) + name
+    {
+      type: "context",
+      elements: [
+        {
+          type: "image",
+          image_url: `${VIGIL_APP_URL}/icon-512.png`,
+          alt_text: "Vigil",
+        },
+        {
+          type: "mrkdwn",
+          text: "  *Vigil*",
+        },
+      ],
+    },
+    // Description
     {
       type: "section",
       text: {
@@ -305,6 +331,25 @@ async function publishHomeTab(userId: string) {
       ],
     },
     { type: "divider" },
+    // Dynamic "Try saying" suggestions
+    {
+      type: "context",
+      elements: [
+        { type: "mrkdwn", text: "*Or try one of these:*" },
+      ],
+    },
+    ...suggestions.map((s, i) => ({
+      type: "actions" as const,
+      elements: [
+        {
+          type: "button" as const,
+          text: { type: "plain_text" as const, text: `\u{1f4ac} ${s}`, emoji: true },
+          value: s,
+          action_id: `action_suggestion_${i}`,
+        },
+      ],
+    })),
+    { type: "divider" },
     ...urgentBlocks,
     ...recentBlocks,
     {
@@ -328,135 +373,13 @@ async function publishHomeTab(userId: string) {
 }
 
 // ============================================================
-// Context-aware suggestion buttons (mirrors web ResponseChips)
+// Context-aware suggestion buttons (shared logic from lib/response-chips.ts)
 // ============================================================
-
-function getContextualChips(message: string): { label: string; value: string }[] {
-  const lower = message.toLowerCase();
-
-  // Welcome / greeting — show the 4 main actions
-  if (
-    lower.includes("what would you like to log") ||
-    lower.includes("what would you like to track") ||
-    lower.includes("what can i help") ||
-    lower.includes("i can assist you with") ||
-    lower.includes("i can help you with") ||
-    lower.includes("i'm vigil") ||
-    lower.includes("hi there") ||
-    lower.includes("hello!")
-  ) {
-    return [
-      { label: "Log a new hire", value: "I'd like to log a new employee" },
-      { label: "Add a contract", value: "I'd like to add a new contract" },
-      { label: "Track an asset", value: "I'd like to track a new IT asset" },
-      { label: "Update a record", value: "I'd like to update an existing record" },
-    ];
-  }
-
-  // Confirmation prompts
-  if (
-    lower.includes("shall i go ahead") ||
-    lower.includes("shall i log") ||
-    lower.includes("shall i save") ||
-    lower.includes("go ahead?") ||
-    lower.includes("look right?") ||
-    lower.includes("look correct?") ||
-    lower.includes("want me to save") ||
-    lower.includes("ready to save")
-  ) {
-    return [
-      { label: "Yes, go ahead", value: "Yes, go ahead" },
-      { label: "Make a change first", value: "Make a change first" },
-      { label: "Cancel", value: "Cancel" },
-    ];
-  }
-
-  // Post-save reminder suggestions
-  if (
-    (lower.includes("set up") && lower.includes("tracking")) ||
-    lower.includes("tracking automation") ||
-    (lower.includes("shall i set") && lower.includes("reminder")) ||
-    (lower.includes("would you like") && lower.includes("reminder")) ||
-    (lower.includes("suggest") && lower.includes("reminder"))
-  ) {
-    return [
-      { label: "Yes, set them up", value: "Yes, set them up" },
-      { label: "Skip reminders", value: "Skip reminders" },
-      { label: "Customise the reminders", value: "Customise the reminders" },
-    ];
-  }
-
-  // Probation question
-  if (lower.includes("probation") && lower.includes("?") && lower.length < 300) {
-    return [
-      { label: "Yes, 3 months", value: "Yes, 3 months" },
-      { label: "Yes, 6 months", value: "Yes, 6 months" },
-      { label: "No probation", value: "No probation" },
-    ];
-  }
-
-  // Employment type question
-  if (lower.includes("full-time") && lower.includes("intern") && lower.includes("?")) {
-    return [
-      { label: "Full-time", value: "Full-time" },
-      { label: "Intern", value: "Intern" },
-      { label: "External consultant", value: "External consultant" },
-    ];
-  }
-
-  // Department question
-  if (lower.includes("which department") || lower.includes("what department")) {
-    return [
-      { label: "Engineering", value: "Engineering" },
-      { label: "Data Science", value: "Data Science" },
-      { label: "IT", value: "IT" },
-      { label: "Sales", value: "Sales" },
-      { label: "People Functions", value: "People Functions" },
-    ];
-  }
-
-  // Follow-up after completion
-  if (
-    lower.includes("anything else") ||
-    lower.includes("what else") ||
-    lower.includes("can i help with")
-  ) {
-    return [
-      { label: "Log another record", value: "Log another record" },
-      { label: "Add a reminder", value: "Add a reminder" },
-      { label: "That's all for now", value: "That's all for now" },
-    ];
-  }
-
-  // Agent logged successfully
-  if (lower.includes("logged successfully") || lower.includes("added successfully")) {
-    return [
-      { label: "Add a reminder", value: "Add a reminder" },
-      { label: "Log another record", value: "Log another record" },
-      { label: "Done", value: "Done" },
-    ];
-  }
-
-  // Simple yes/no confirmation
-  if (
-    lower.endsWith("?") &&
-    lower.length < 200 &&
-    (lower.includes("is that correct") || lower.includes("does that look") || lower.includes("is this correct"))
-  ) {
-    return [
-      { label: "Yes", value: "Yes" },
-      { label: "No", value: "No" },
-    ];
-  }
-
-  // No suggestions for open-ended questions or mid-conversation flow
-  return [];
-}
 
 // Build Block Kit actions from contextual chips. Returns empty array if no suggestions.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildSuggestionBlocks(agentMessage: string): any[] {
-  const chips = getContextualChips(agentMessage);
+  const chips = getChips(agentMessage);
   if (chips.length === 0) return [];
 
   // Use a unique action_id per chip to avoid collisions across messages
@@ -466,8 +389,8 @@ function buildSuggestionBlocks(agentMessage: string): any[] {
       type: "actions",
       elements: chips.map((chip, i) => ({
         type: "button",
-        text: { type: "plain_text", text: chip.label, emoji: true },
-        value: chip.value,
+        text: { type: "plain_text", text: chip, emoji: true },
+        value: chip,
         action_id: `dm_chip_${ts}_${i}`,
       })),
     },
