@@ -118,17 +118,21 @@ async function handleSlackMessage(
     }
 
     if (isDM) {
-      // DMs: flat response with suggestion buttons
+      // DMs: flat response with context-aware suggestion buttons
+      const suggestionBlocks = buildSuggestionBlocks(replyText);
+      const blocks = [
+        {
+          type: "section",
+          text: { type: "mrkdwn", text: replyText },
+        },
+        ...suggestionBlocks,
+      ];
+
       await slack.chat.postMessage({
         channel,
         text: replyText,
-        blocks: [
-          {
-            type: "section",
-            text: { type: "mrkdwn", text: replyText },
-          },
-          ...buildSuggestionBlocks(),
-        ],
+        // Only use blocks if we have suggestions; otherwise plain text
+        ...(suggestionBlocks.length > 0 ? { blocks } : {}),
       });
     } else {
       // Channels: threaded, no suggestion buttons
@@ -252,31 +256,20 @@ async function publishHomeTab(userId: string) {
   }
 
   const blocks = [
-    // Centered logo
+    // Centered app name (header blocks are centered in Home tab)
     {
-      type: "image",
-      image_url: `${VIGIL_APP_URL}/icon-512.png`,
-      alt_text: "Vigil",
-    },
-    // App name and description — centered via context block
-    {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: "*Vigil*",
-        },
-      ],
+      type: "header",
+      text: { type: "plain_text", text: "\u{1f6e1}\ufe0f Vigil", emoji: true },
     },
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets — just by talking.",
+        text: "AI-powered asset and contract tracking. Log and track employees, contracts, and IT assets \u2014 just by talking.",
       },
     },
     { type: "divider" },
-    // 4 suggestion chips — matching Policy Support Assistant style
+    // 4 suggestion chips — 2x2 layout
     {
       type: "actions",
       elements: [
@@ -334,65 +327,169 @@ async function publishHomeTab(userId: string) {
   });
 }
 
-// Build suggestion buttons to append to agent DM replies
+// ============================================================
+// Context-aware suggestion buttons (mirrors web ResponseChips)
+// ============================================================
+
+function getContextualChips(message: string): { label: string; value: string }[] {
+  const lower = message.toLowerCase();
+
+  // Welcome / greeting — show the 4 main actions
+  if (
+    lower.includes("what would you like to log") ||
+    lower.includes("what would you like to track") ||
+    lower.includes("what can i help") ||
+    lower.includes("i can assist you with") ||
+    lower.includes("i can help you with") ||
+    lower.includes("i'm vigil") ||
+    lower.includes("hi there") ||
+    lower.includes("hello!")
+  ) {
+    return [
+      { label: "Log a new hire", value: "I'd like to log a new employee" },
+      { label: "Add a contract", value: "I'd like to add a new contract" },
+      { label: "Track an asset", value: "I'd like to track a new IT asset" },
+      { label: "Update a record", value: "I'd like to update an existing record" },
+    ];
+  }
+
+  // Confirmation prompts
+  if (
+    lower.includes("shall i go ahead") ||
+    lower.includes("shall i log") ||
+    lower.includes("shall i save") ||
+    lower.includes("go ahead?") ||
+    lower.includes("look right?") ||
+    lower.includes("look correct?") ||
+    lower.includes("want me to save") ||
+    lower.includes("ready to save")
+  ) {
+    return [
+      { label: "Yes, go ahead", value: "Yes, go ahead" },
+      { label: "Make a change first", value: "Make a change first" },
+      { label: "Cancel", value: "Cancel" },
+    ];
+  }
+
+  // Post-save reminder suggestions
+  if (
+    (lower.includes("set up") && lower.includes("tracking")) ||
+    lower.includes("tracking automation") ||
+    (lower.includes("shall i set") && lower.includes("reminder")) ||
+    (lower.includes("would you like") && lower.includes("reminder")) ||
+    (lower.includes("suggest") && lower.includes("reminder"))
+  ) {
+    return [
+      { label: "Yes, set them up", value: "Yes, set them up" },
+      { label: "Skip reminders", value: "Skip reminders" },
+      { label: "Customise the reminders", value: "Customise the reminders" },
+    ];
+  }
+
+  // Probation question
+  if (lower.includes("probation") && lower.includes("?") && lower.length < 300) {
+    return [
+      { label: "Yes, 3 months", value: "Yes, 3 months" },
+      { label: "Yes, 6 months", value: "Yes, 6 months" },
+      { label: "No probation", value: "No probation" },
+    ];
+  }
+
+  // Employment type question
+  if (lower.includes("full-time") && lower.includes("intern") && lower.includes("?")) {
+    return [
+      { label: "Full-time", value: "Full-time" },
+      { label: "Intern", value: "Intern" },
+      { label: "External consultant", value: "External consultant" },
+    ];
+  }
+
+  // Department question
+  if (lower.includes("which department") || lower.includes("what department")) {
+    return [
+      { label: "Engineering", value: "Engineering" },
+      { label: "Data Science", value: "Data Science" },
+      { label: "IT", value: "IT" },
+      { label: "Sales", value: "Sales" },
+      { label: "People Functions", value: "People Functions" },
+    ];
+  }
+
+  // Follow-up after completion
+  if (
+    lower.includes("anything else") ||
+    lower.includes("what else") ||
+    lower.includes("can i help with")
+  ) {
+    return [
+      { label: "Log another record", value: "Log another record" },
+      { label: "Add a reminder", value: "Add a reminder" },
+      { label: "That's all for now", value: "That's all for now" },
+    ];
+  }
+
+  // Agent logged successfully
+  if (lower.includes("logged successfully") || lower.includes("added successfully")) {
+    return [
+      { label: "Add a reminder", value: "Add a reminder" },
+      { label: "Log another record", value: "Log another record" },
+      { label: "Done", value: "Done" },
+    ];
+  }
+
+  // Simple yes/no confirmation
+  if (
+    lower.endsWith("?") &&
+    lower.length < 200 &&
+    (lower.includes("is that correct") || lower.includes("does that look") || lower.includes("is this correct"))
+  ) {
+    return [
+      { label: "Yes", value: "Yes" },
+      { label: "No", value: "No" },
+    ];
+  }
+
+  // No suggestions for open-ended questions or mid-conversation flow
+  return [];
+}
+
+// Build Block Kit actions from contextual chips. Returns empty array if no suggestions.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildSuggestionBlocks(): any[] {
+function buildSuggestionBlocks(agentMessage: string): any[] {
+  const chips = getContextualChips(agentMessage);
+  if (chips.length === 0) return [];
+
+  // Use a unique action_id per chip to avoid collisions across messages
+  const ts = Date.now();
   return [
-    { type: "divider" },
     {
       type: "actions",
-      elements: [
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Log a new hire", emoji: true },
-          value: "I'd like to log a new employee",
-          action_id: "dm_suggest_employee",
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Add a contract", emoji: true },
-          value: "I'd like to add a new contract",
-          action_id: "dm_suggest_contract",
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Track an asset", emoji: true },
-          value: "I'd like to track a new IT asset",
-          action_id: "dm_suggest_asset",
-        },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Update a record", emoji: true },
-          value: "I'd like to update an existing record",
-          action_id: "dm_suggest_update",
-        },
-      ],
+      elements: chips.map((chip, i) => ({
+        type: "button",
+        text: { type: "plain_text", text: chip.label, emoji: true },
+        value: chip.value,
+        action_id: `dm_chip_${ts}_${i}`,
+      })),
     },
   ];
 }
 
 // Handle button click from Home tab or DM suggestions — DM the user with the prompt
-async function handleButtonAction(userId: string, actionValue: string) {
+async function handleButtonAction(userId: string, actionValue: string, channelId?: string) {
   try {
-    // Open a DM channel with the user
-    const dm = await slack.conversations.open({ users: userId });
-    const channel = dm.channel?.id;
+    // Determine the DM channel: use provided channel (from DM button click) or open one
+    let channel = channelId;
+    if (!channel) {
+      try {
+        const dm = await slack.conversations.open({ users: userId });
+        channel = dm.channel?.id;
+      } catch (openErr) {
+        console.error("conversations.open failed (may need im:write scope):", openErr);
+        // Fallback: post directly using user ID as channel (works with chat:write)
+        channel = userId;
+      }
+    }
     if (!channel) return;
-
-    // Post the user's prompt first so it looks like they typed it
-    await slack.chat.postMessage({
-      channel,
-      text: actionValue,
-      // Post as the user would see it — shows what was clicked
-      blocks: [
-        {
-          type: "context",
-          elements: [
-            { type: "mrkdwn", text: `_${actionValue}_` },
-          ],
-        },
-      ],
-    });
 
     // Process with the agent
     const messages: Message[] = [{ role: "user", content: actionValue }];
@@ -402,6 +499,11 @@ async function handleButtonAction(userId: string, actionValue: string) {
     if (result.item_logged) {
       replyText += `\n\n:white_check_mark: *${result.item_name}* logged to Vigil.`;
     }
+    if (result.reminders_added) {
+      replyText += `\n\n:bell: Reminders added for *${result.item_name}*.`;
+    }
+
+    const suggestionBlocks = buildSuggestionBlocks(replyText);
 
     await slack.chat.postMessage({
       channel,
@@ -411,7 +513,7 @@ async function handleButtonAction(userId: string, actionValue: string) {
           type: "section",
           text: { type: "mrkdwn", text: replyText },
         },
-        ...buildSuggestionBlocks(),
+        ...suggestionBlocks,
       ],
     });
   } catch (error) {
@@ -470,7 +572,9 @@ export async function POST(req: NextRequest) {
           const userId = interaction.user?.id;
 
           if (action && userId) {
-            waitUntil(handleButtonAction(userId, action.value));
+            // If click came from a DM, pass the channel ID so we don't need conversations.open
+            const channelId = interaction.channel?.id;
+            waitUntil(handleButtonAction(userId, action.value, channelId));
           }
         }
 
