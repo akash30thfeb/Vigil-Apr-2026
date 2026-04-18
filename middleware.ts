@@ -6,6 +6,7 @@ const isPublicRoute = createRouteMatcher([
   "/onboarding",
   "/api/chat(.*)",
   "/api/test-reminder(.*)",
+  "/api/slack(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

@@ -1,7 +1,8 @@
 # Vigil — Project Context & Briefing
 > Read this before every Claude Code session.
 > This is the single source of truth for all architectural and product decisions.
-> Last updated: 6 April 2026
+> When updating this file, output a brief summary of what changed.
+> Last updated: 18 April 2026
 
 ---
 
@@ -28,7 +29,8 @@ Vigil is a B2B AI-powered asset and contract tracking web app. It allows employe
 | Database | Supabase | Postgres + RLS + Storage for receipts |
 | AI Agent | Anthropic API | claude-sonnet-4-20250514 |
 | Background Jobs | Trigger.dev | Schedules and fires reminders |
-| Notifications | Slack Incoming Webhook | Block Kit messages via webhook URL |
+| Slack Bot | @slack/web-api | Inbound: `@Vigil` mentions, DMs, `/vigil` slash command |
+| Notifications | Slack Incoming Webhook | Outbound: Block Kit messages via webhook URL |
 | Hosting | Vercel | Auto-deploy from GitHub. Live at vigil-apr-2026.vercel.app |
 | DB Management | Supabase MCP | HTTP-based, configured in `.mcp.json` at project root |
 
@@ -82,20 +84,22 @@ During transition, the API route dual-writes to both `items` (legacy columns) an
 
 ## Employee Domain (Phase 1 — Complete)
 
-### Employees Table Schema
+### Employees Table Schema (verified from live DB — 18 April 2026)
 
-| Column | Type | Required? | Fixed Values |
-|--------|------|-----------|-------------|
-| employee_name | text | **Always** | — |
-| role | text | **Always** | Cascading suggestions by department (see below) |
-| joining_date | date | **Always** | — |
-| employment_type | text | **Always** | `full_time`, `external_consultant`, `intern` |
-| department | text | **Always** | `IT`, `People Functions`, `Sales`, `Engineering`, `Data Analytics`, `Data Science` |
-| employment_status | text | **Always (inferred)** | `active`, `notice_period`, `exited` |
-| last_working_day | date | **If exiting/exited** | — |
-| probation_end | date | No | Follow-up for full_time + intern only, skip for external_consultant. Only ask if joining_date < 6 months ago. |
-| manager_name | text | **If exiting/updating** | Required for exits — manager receives offboarding alerts |
-| notes | text | No | — |
+| Column | Type | Required? | Fixed Values | DB CHECK |
+|--------|------|-----------|-------------|----------|
+| id | uuid | **Yes** (PK) | — | `uuid_generate_v4()` |
+| item_id | uuid | **Yes** (FK → items) | — | NOT NULL |
+| employee_name | text | **Yes** | — | NOT NULL |
+| role | text | **Yes** | Cascading suggestions by department (see below) | NOT NULL |
+| joining_date | date | **Yes** | — | NOT NULL |
+| employment_type | text | **Yes** | `full_time`, `external_consultant`, `intern` | CHECK constraint |
+| employment_status | text | **Yes** (default: `active`) | `active`, `notice_period`, `exited` | CHECK constraint |
+| department | text | No | `IT`, `People Functions`, `Sales`, `Engineering`, `Data Analytics`, `Data Science` | — |
+| last_working_day | date | **If exiting/exited** | — | — |
+| probation_end | date | No | Follow-up for full_time + intern only, skip for external_consultant. Only ask if joining_date < 6 months ago. | — |
+| manager_name | text | **If exiting/updating** | Required for exits — manager receives offboarding alerts | — |
+| notes | text | No | — | — |
 
 ### Role Suggestions by Department
 
@@ -224,6 +228,7 @@ Assets:        30 days before warranty expiry, 3-month ROI check-in
 Employees:     2 weeks before probation end, annual work anniversary
                Exiting: 1 week before last working day, equipment return on LWD
 Milestones:    Annual anniversary
+Recurrence:    Any reminder can optionally recur daily, weekly, or monthly (field: "recurrence")
 ```
 
 ---
@@ -250,6 +255,7 @@ Notifications table:
 
 Reminders table:
 - `sent_at` column added — populated when reminder is actually delivered (separate from `fire_at` which is the scheduled time)
+- `recurrence` column added (migration 008) — `NULL` (one-shot, default), `daily`, `weekly`, or `monthly`. DB CHECK constraint enforces valid values.
 
 RLS is enabled on all tables. Org isolation enforced via `org_id` from Clerk JWT.
 Supabase MCP server connected via HTTP (`.mcp.json` at project root) for direct DB management.
@@ -281,6 +287,35 @@ Available tools: `execute_sql`, `apply_migration`, `list_tables`, `list_migratio
 
 ---
 
+## Slack Bot Setup
+
+### Environment Variables (add to `.env.local` and Vercel)
+
+| Variable | Description |
+|----------|-------------|
+| `SLACK_WEBHOOK_URL` | Incoming webhook for outbound reminder notifications (existing) |
+| `SLACK_BOT_TOKEN` | `xoxb-...` bot token for posting messages and reading threads |
+| `SLACK_SIGNING_SECRET` | HMAC secret for verifying inbound Slack requests |
+| `SLACK_VIGIL_ORG_ID` | Vigil org ID for Slack-originated items (default: `"demo"`) |
+| `SLACK_VIGIL_USER_ID` | Vigil user ID for Slack-originated items (default: `"slack-bot"`) |
+
+### Slack App Configuration (api.slack.com/apps — existing Vigil app)
+
+1. **Bot Token Scopes** (OAuth & Permissions): `chat:write`, `app_mentions:read`, `im:history`, `im:read`, `channels:history`
+2. **Event Subscriptions**: Request URL → `https://vigil-apr-2026.vercel.app/api/slack/events`. Subscribe to bot events: `app_mention`, `message.im`
+3. **Slash Commands**: `/vigil` → `https://vigil-apr-2026.vercel.app/api/slack/events`
+4. **Install to workspace** → grab bot token and signing secret
+
+### How it works
+
+1. User mentions `@Vigil` in a channel, DMs the bot, or uses `/vigil <message>`
+2. Slack sends event/command to `/api/slack/events`
+3. Route acknowledges with 200 immediately (Slack requires < 3s)
+4. Background processing via `waitUntil`: fetches thread history (if multi-turn), calls `processChat()`, posts reply via `chat.postMessage`
+5. Multi-turn: each reply in a thread triggers a full thread fetch → conversation history rebuilt → agent has full context
+
+---
+
 ## Trigger.dev + Slack Notification Pipeline
 
 ### How it works
@@ -290,7 +325,8 @@ Available tools: `execute_sql`, `apply_migration`, `list_tables`, `list_migratio
 3. Scan picks up reminders where `fire_at <= now` and `status = "scheduled"` (changed from `now + 1 hour` — reminders only fire when their time has actually arrived)
 4. Each due reminder triggers the `send-reminder` task (with 3 retries). Tasks run on a named queue (`reminder-alerts`) with `concurrencyLimit: 1` — when multiple reminders fire at once, they visibly queue in the Trigger.dev dashboard (Queued → Executing → Completed)
 5. `send-reminder` fetches reminder + item, sends Slack Block Kit message, marks `status: "sent"` with `sent_at`, logs to `notifications` table
-6. For employee exits: sends a second Slack message to HR Team (see "Dual Slack Alerts" section)
+6. For recurring reminders: after marking `sent`, spawns a new `scheduled` row with `fire_at` bumped forward by the recurrence interval (spawn-next pattern). Old `sent` rows provide audit trail and can be cleaned up periodically: `DELETE FROM reminders WHERE status='sent' AND recurrence IS NOT NULL`
+7. For employee exits: sends a second Slack message to HR Team (see "Dual Slack Alerts" section)
 
 ### Configurable cron interval
 
@@ -310,6 +346,30 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 ### Test endpoint
 
 `/api/test-reminder` — GET or POST. Bypasses Trigger.dev, directly sends Slack notification for the next due reminder (or a specific reminder by ID). Useful for verifying Slack delivery without waiting for cron.
+
+### Recurring Reminders (spawn-next pattern)
+
+Reminders support optional recurrence: `daily`, `weekly`, or `monthly` (column: `recurrence`, default `NULL`).
+
+**How it works:**
+1. Recurring reminder fires → marked `sent` as normal (audit trail)
+2. A new `scheduled` row is inserted with `fire_at` bumped forward by the interval
+3. Next cron scan picks up the new row → cycle repeats
+4. One-shot reminders (`recurrence = NULL`) behave as before — no spawn
+
+**Next fire_at logic:** Uses `now` as base if original `fire_at` is in the past (prevents catch-up storm after downtime). Uses original `fire_at` otherwise (prevents drift).
+
+**Cleanup:** Old sent recurring rows can be purged: `DELETE FROM reminders WHERE status='sent' AND recurrence IS NOT NULL`
+
+**Agent prompt:** Teaches the agent to set `recurrence` field when user asks for repeating reminders. Supported values: `daily`, `weekly`, `monthly`. Hourly is intentionally excluded (too noisy for Slack).
+
+**Files involved:** migration 008, `lib/types.ts` (Zod), `lib/agent-prompts.ts`, `app/api/chat/route.ts` (both ITEM_DATA + REMINDER_DATA paths), `trigger/reminders.ts`, `app/api/test-reminder/route.ts`
+
+### Timezone fix for fire_at (deployed)
+
+Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timezone offset. On localhost (IST timezone) this parsed correctly, but on Vercel (UTC server) it was stored as-is in UTC — 5.5 hours off.
+
+**Fix:** Before parsing `fire_at`, check if it already has a timezone indicator (`Z`, `+`, `-` followed by digit). If not, append `+05:30` so it's always interpreted as IST regardless of server timezone. Applied in both ITEM_DATA and REMINDER_DATA paths in `app/api/chat/route.ts`.
 
 ### Important: Trigger.dev schedule management
 
@@ -441,14 +501,21 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 - [x] **View Transitions** — smooth cross-page navigation
 - [x] **Deploy to Vercel** — GitHub repo + Vercel auto-deploy on push. Live and verified.
 
+### Completed (Session — 18 April 2026)
+- [x] **Recurring reminders** — daily/weekly/monthly via spawn-next pattern (migration 008, Zod, agent prompt, trigger task, test endpoint). Committed locally, NOT pushed to Vercel yet.
+- [x] **Timezone fix for fire_at on Vercel** — bare IST datetimes now get `+05:30` appended before parsing. Deployed to Vercel.
+
 ### Remaining Work
+- [ ] **Test recurring reminders** — create recurring reminder via chat, fire via `/api/test-reminder`, verify spawn-next creates new scheduled row. Then push to Vercel.
 - [ ] **Overview dashboard hydration fix** — add mounted state pattern for date-dependent rendering
 - [ ] **Auto-scroll on page transition** — scroll still jumps on hero→chat transition (scoped fix applied but transition layout shift still triggers it)
 - [ ] **Agent-driven chips** (optional) — have agent return chips as structured data instead of client-side pattern matching
 - [ ] **Voice barge-in** — true voice interruption requires server-side STT (Deepgram/Whisper). Not feasible with browser Web APIs alone.
 - [ ] **Voice selection UI** — let user pick TTS voice from browser voices. Currently hardcoded preference list.
 - [ ] **Cloud TTS upgrade** (optional) — replace browser SpeechSynthesis with ElevenLabs/OpenAI TTS for higher quality, consistent cross-browser voice
+- [x] **Slack bot** — Intake Agent as a Slack bot (`/vigil` slash command + `@Vigil` mentions + DMs, multi-turn via threads)
 - [ ] Classification Agent (stretch — silent server-side enrichment)
+- [ ] Phase 4: Drop legacy items columns after all departments tested
 - [ ] `purchase_date` NOT NULL migration for assets table (identified but not confirmed)
 
 ---
@@ -530,7 +597,7 @@ Owner field source: employees → manager_name, contracts → signatory, assets 
 
 ```
 vigil/
-├── CONTEXT.md                           ← this file
+├── CLAUDE.md                           ← this file
 ├── .mcp.json                            ← Supabase MCP config
 ├── middleware.ts                         ← Clerk auth middleware
 ├── app/
@@ -548,9 +615,10 @@ vigil/
 │   │       ├── contracts/page.tsx
 │   │       └── hr/page.tsx
 │   └── api/
-│       ├── chat/route.ts                ← Anthropic API proxy + DB writes (per-type write paths)
+│       ├── chat/route.ts                ← web chat endpoint (thin wrapper around chat-engine)
 │       ├── items/route.ts               ← REST GET/POST for items
 │       ├── items/[id]/route.ts          ← GET/PATCH for record editing from dashboard
+│       ├── slack/events/route.ts        ← Slack bot (events, slash commands, multi-turn threads)
 │       └── test-reminder/route.ts       ← Manual Slack notification testing (bypasses Trigger.dev)
 ├── trigger/
 │   └── reminders.ts                     ← Trigger.dev cron: reminderScan + sendReminder tasks
@@ -561,8 +629,10 @@ vigil/
 │   ├── supabase.ts                      ← supabaseAdmin client
 │   ├── types.ts                         ← Zod schemas (per-type validation)
 │   ├── agent-prompts.ts                 ← Intake Agent system prompt
+│   ├── chat-engine.ts                   ← shared chat processing (Anthropic call + DB writes) — used by web + Slack
 │   ├── navigate.ts                      ← View Transitions helpers (smoothNavigate, smoothRefresh)
-│   └── slack.ts                         ← Slack incoming webhook helper (Block Kit messages)
+│   ├── slack.ts                         ← Slack incoming webhook helper (Block Kit messages for reminders)
+│   └── slack-verify.ts                  ← HMAC signing secret verification for Slack events
 ├── components/
 │   ├── ChatDrawer.tsx                   ← persistent chat drawer (multiline input, voice mode, ResponseChips, FormattedMessage)
 │   ├── VoiceButton.tsx                  ← thin UI shell for voice mode (5 visual states)
@@ -583,15 +653,51 @@ vigil/
         ├── 004_notifications_slack.sql  ← channel, item_id, message columns; resend_message_id → external_id
         ├── 005_domain_contracts.sql     ← contracts domain table columns + backfill + date constraint
         ├── 006_domain_assets.sql        ← assets domain table columns + backfill
-        └── 007_contracts_check_constraints.sql ← contract_type, billing_cycle, date_required CHECK constraints
+        ├── 007_contracts_check_constraints.sql ← contract_type, billing_cycle, date_required CHECK constraints
+        └── 008_recurring_reminders.sql      ← recurrence column (daily/weekly/monthly) for recurring reminders
 ```
 
 ---
 
-## How to Use This File in Claude Code
+## Post-Demo Roadmap
 
-Start every Claude Code session with:
-> "Read CONTEXT.md. We are building Vigil. Today we are working on [specific task]."
+### Priority 1 — Vigil in Slack (IMPLEMENTED — 18 April 2026)
+Slack bot lets users talk to Vigil from inside Slack — not just receive alerts.
 
-Update this file whenever a significant architectural decision is made in a build session.
-This file is the bridge between brainstorming (claude.ai) and building (Claude Code).
+Architecture:
+- Raw Slack Web API (`@slack/web-api`) — no Bolt SDK. Keeps pattern consistent with existing Next.js API routes.
+- Single route: `/api/slack/events` handles URL verification, event callbacks (`app_mention`, `message`), and `/vigil` slash command
+- Multi-turn conversations via Slack threads — each reply fetches thread history via `conversations.replies`, maps to messages[], calls shared `processChat()` engine
+- Shared `lib/chat-engine.ts` — core chat logic (Anthropic call + ITEM_DATA/REMINDER_DATA parsing + DB writes) extracted from `/api/chat/route.ts`. Both web and Slack call it.
+- `lib/slack-verify.ts` — HMAC-SHA256 signing secret verification with replay protection
+- `@vercel/functions` `waitUntil` — acknowledges Slack within 3s, processes Claude call in background, posts reply via `chat.postMessage`
+- Deduplication — skips Slack retries via `x-slack-retry-num` header
+- Auth mapping — hardcoded `SLACK_VIGIL_ORG_ID` / `SLACK_VIGIL_USER_ID` env vars for demo (production would use a mapping table)
+- #vigil-alerts remains for outbound reminder notifications (existing webhook)
+- Reply handling: "done" → mark resolved, "snooze 2w" → reschedule (stretch — not yet implemented)
+
+### Priority 2 — Classification Agent (Fern)
+Silent server-side enrichment after intake agent. Runs post-save.
+Infers warranty periods, checks for duplicates, enriches vendor category.
+
+### Priority 3 — Record hygiene
+Deduplication, deletion, cleanup of sent reminders, user mapping for alerts.
+
+### Priority 4 — Recurring prompts + escalation
+Morning nudge, escalation workflow, task-completed flow.
+
+### Priority 5 — UX enhancements
+Paper Trail, file attachments, enhanced voice.
+
+### Other Subsequent Tasks
+Expand to more verticals — any team with tracking use cases, not just IT/Contracts/HR
+User mapping and security — who has access to what (infer from Logged in User's Department and Role), which Slack user receives which alert
+Intake Agent responses based on who is logged in (Department and Role)
+User Conversation History and memory
+Slack alerts redesign — the current Block Kit format needs a rethink
+Paper Trail — visual timeline per item
+Receipt and file attachment support
+Enhanced voice — fix rough edges, make it truly conversational
+UI Improvements
+
+---
