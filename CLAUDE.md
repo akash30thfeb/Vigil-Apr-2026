@@ -2,7 +2,7 @@
 > Read this before every Claude Code session.
 > This is the single source of truth for all architectural and product decisions.
 > When updating this file, output a brief summary of what changed.
-> Last updated: 18 April 2026 (Session 2)
+> Last updated: 19 April 2026 (Session 3)
 
 ---
 
@@ -503,6 +503,75 @@ Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timez
 - Slack app configured: bot scopes, event subscriptions, slash command, interactivity URL
 - Tested: DMs working, channel mentions working, Home tab rendering with live data
 
+**Day 5 — Slack UX polish + shared chip logic** (19 April 2026)
+- **Shared response-chips logic** — extracted `getChips()` from `components/ResponseChips.tsx` into `lib/response-chips.ts`. Both web (`ResponseChips`) and Slack route now import from the same source. Fixes drift between platforms — any pattern change applies everywhere. Also added `hi there` / `hello!` to welcome detection.
+- **Slack Home tab redesign** (several iterations, final form):
+  - AI disclaimer context block at top
+  - Centered agent icon (128px — `public/icon-128.png`, resized from `icon-512.png` using `sharp`)
+  - "Vigil" header (`header` block)
+  - Long description (full value prop)
+  - 4 primary action buttons in 2x2 layout (Log a new hire, Add a contract, Track an asset, Update a record)
+  - Dynamic "Or try one of these" suggestions (randomized on each load)
+  - Urgent items + recent items from DB
+  - Footer with usage tips + dashboard link
+- **Block Kit alignment limitation confirmed** — Block Kit does NOT support center alignment on any block type. Policy Support Assistant's centered layout is a Slack Agents & AI Apps (Agentforce) feature, not standard Block Kit.
+- **Agents & AI Apps mode tested and reverted** — enabling it added a "Chat" tab with native centered agent experience (icon + description + suggested prompts), but caused issues so it was disabled. Sticking with standard Block Kit Home tab (left-aligned).
+- **Button click fix** — root cause was `conversations.open` failing without `im:write` scope. Added fallback: if `conversations.open` fails, post directly using `userId` as channel (works with just `chat:write`). For DM button clicks, pass `channel.id` from the interaction payload so we skip `conversations.open` entirely.
+- **Context-aware DM suggestion buttons** — agent DM replies now show contextual buttons based on the response content (welcome → 4 actions, confirmation → Yes/Change/Cancel, reminder offer → Set up/Skip/Customise, department question → dept list, probation → 3mo/6mo/None, follow-up → Log another/Add reminder/That's all, logged → Add reminder/Log another/Done). Open-ended mid-conversation questions get no buttons. Uses shared `getChips()` from `lib/response-chips.ts`.
+- **Channel mentions** — stay threaded with no suggestion buttons (keeps shared channels uncluttered)
+- **Home tab button clicks** — work correctly, open DM conversation in Messages tab with agent reply + suggestion buttons
+- Deployed to Vercel (multiple commits: shared chips extraction, Home tab iterations, button fixes)
+
+---
+
+## Slack App Behavior (Current Version)
+
+### App Tabs
+
+**Home tab** (Block Kit, left-aligned — platform limitation):
+- AI disclaimer banner
+- Agent icon (128px) + "Vigil" + long description
+- 4 primary action buttons (2x2): Log a new hire, Add a contract, Track an asset, Update a record
+- "Or try one of these" — 3 dynamic randomized suggestion buttons
+- ⚠️ Needs Attention — up to 5 urgent items with traffic-light emoji
+- 📋 Recently Logged — up to 5 latest records
+- Footer with usage tips + dashboard link
+- **Button click** → opens Messages tab and starts conversation; agent reply includes context-aware suggestion buttons
+
+**Messages tab** (DMs):
+- Flat conversation (no threading) — feels like natural 1:1 chat
+- Multi-turn context via `conversations.history` (last 20 messages)
+- Context-aware suggestion buttons appear below agent replies (only when contextually relevant — no buttons for open-ended questions)
+
+### Channels (where @Vigil is invited)
+
+- `@Vigil` mentions → threaded replies (keeps channel uncluttered)
+- Multi-turn via `conversations.replies` within the thread
+- No suggestion buttons in channel threads
+- Full agent capability: log items, add reminders, answer questions
+
+### Slash Command (`/vigil <message>`)
+
+- Works in any channel or DM
+- Single-turn, no multi-turn state
+- Response posted inline to the channel where command was issued (via `response_url`)
+- Empty `/vigil` returns usage hint
+
+### Outbound Reminders (scheduled)
+
+- Trigger.dev cron scans `reminders` where `fire_at <= now` and `status = scheduled`
+- Due reminders post Block Kit message to `#vigil-alerts` webhook (urgency emoji, owner field, days remaining)
+- Dual alerts on employee exits (manager + HR Team with `[HR Copy]` prefix)
+- Recurring reminders (daily/weekly/monthly) spawn next scheduled row after firing
+
+### Agents & AI Apps mode — NOT ENABLED
+
+Tried and reverted in Session 3. If re-enabled in Slack app dashboard:
+- Adds "Chat" and "History" tabs (native Slack agent UI)
+- Chat tab renders centered icon + description + suggested prompts (configured in dashboard)
+- Adds AI disclaimer banner in app header bar
+- Configuration: api.slack.com/apps → Agents & AI Apps section → toggle on + fill in Overview + Suggested Prompts
+
 ---
 
 ## Pending Tasks (carry over to next session)
@@ -539,8 +608,15 @@ Agent outputs bare datetimes in IST (e.g. `"2026-04-06 15:34:00"`) without timez
 - [x] **Interactive buttons** — Home tab buttons open DM and start conversation. Interactivity URL configured.
 - [x] **CONTEXT.md → CLAUDE.md rename** — project context file renamed
 
+### Completed (Session 3 — 19 April 2026)
+- [x] **Shared response-chips logic** — `lib/response-chips.ts` as single source of truth. Imported by web `ResponseChips.tsx` and Slack route. Eliminates drift.
+- [x] **Slack Home tab redesign (final)** — disclaimer + 128px icon + header + long description + 2x2 buttons + dynamic suggestions + urgent/recent items + footer
+- [x] **Button click fix** — fallback to `userId` as channel when `conversations.open` fails, pass `channel.id` from DM interactions
+- [x] **Context-aware DM suggestion buttons** — agent replies in DMs include contextually appropriate suggestions (same logic as web `ResponseChips`). No buttons for open-ended questions.
+- [x] **icon-128.png** created via `sharp` resize from `icon-512.png` (fixed oversized Home tab image)
+- [x] **Agents & AI Apps mode tested and reverted** — native centered Chat tab works, but had issues; disabled
+
 ### Remaining Work
-- [ ] **Test Slack button clicks** — verify Home tab buttons and suggestion buttons open DM and start conversation
 - [ ] **Test recurring reminders** — create recurring reminder via chat, fire via `/api/test-reminder`, verify spawn-next creates new scheduled row. Then push to Vercel.
 - [ ] **Overview dashboard hydration fix** — add mounted state pattern for date-dependent rendering
 - [ ] **Auto-scroll on page transition** — scroll still jumps on hero→chat transition (scoped fix applied but transition layout shift still triggers it)
@@ -689,14 +765,18 @@ vigil/
 │   ├── chat-engine.ts                   ← shared chat processing (Anthropic call + DB writes) — used by web + Slack
 │   ├── navigate.ts                      ← View Transitions helpers (smoothNavigate, smoothRefresh)
 │   ├── slack.ts                         ← Slack incoming webhook helper (Block Kit messages for reminders)
-│   └── slack-verify.ts                  ← HMAC signing secret verification for Slack events
+│   ├── slack-verify.ts                  ← HMAC signing secret verification for Slack events
+│   └── response-chips.ts                ← shared getChips() — used by both web ResponseChips and Slack route
+├── public/
+│   ├── icon-512.png                     ← original agent icon (512px)
+│   └── icon-128.png                     ← resized for Slack Home tab (created via sharp)
 ├── components/
 │   ├── ChatDrawer.tsx                   ← persistent chat drawer (multiline input, voice mode, ResponseChips, FormattedMessage)
 │   ├── VoiceButton.tsx                  ← thin UI shell for voice mode (5 visual states)
 │   ├── ItemCard.tsx                     ← item card with traffic light + reminder bell + popover
 │   ├── ItemList.tsx                     ← client wrapper for ItemCard with expand/collapse for RecordEditor
 │   ├── RecordEditor.tsx                 ← two-column inline record editor (text, date, number, select, boolean)
-│   ├── ResponseChips.tsx                ← context-aware chip buttons (welcome, confirmation, reminders, etc.)
+│   ├── ResponseChips.tsx                ← web UI wrapper; imports getChips() from lib/response-chips.ts
 │   ├── FormattedMessage.tsx             ← renders **bold** markdown in chat bubbles
 │   ├── LoggedToast.tsx                  ← success toast
 │   └── UserInfo.tsx                     ← user name/role/department display
@@ -718,13 +798,14 @@ vigil/
 
 ## Post-Demo Roadmap
 
-### Priority 1 — Vigil in Slack (IMPLEMENTED — 18 April 2026)
+### Priority 1 — Vigil in Slack (IMPLEMENTED — 18–19 April 2026)
 Slack bot lets users talk to Vigil from inside Slack — not just receive alerts.
 
 Architecture:
 - Raw Slack Web API (`@slack/web-api`) — no Bolt SDK. Keeps pattern consistent with existing Next.js API routes.
 - Single route: `/api/slack/events` handles URL verification, event callbacks (`app_mention`, `message`), `/vigil` slash command, and interactive payloads (button clicks)
 - Shared `lib/chat-engine.ts` — core chat logic (Anthropic call + ITEM_DATA/REMINDER_DATA parsing + DB writes) extracted from `/api/chat/route.ts`. Both web and Slack call it. `app/api/chat/route.ts` is now a thin ~30-line wrapper.
+- Shared `lib/response-chips.ts` — context-aware suggestion chip logic (`getChips()`) used by both `components/ResponseChips.tsx` (web) and `/api/slack/events` (Slack DM replies + Home tab). Single source of truth for chip patterns.
 - `lib/slack-verify.ts` — HMAC-SHA256 signing secret verification with replay protection
 - `@vercel/functions` `waitUntil` — acknowledges Slack within 3s, processes Claude call in background, posts reply via `chat.postMessage`
 - Deduplication — skips Slack retries via `x-slack-retry-num` header
@@ -732,15 +813,21 @@ Architecture:
 - #vigil-alerts remains for outbound reminder notifications (existing webhook)
 
 Conversation behaviour:
-- **DMs (Messages tab)**: Flat responses (no threading). Multi-turn context built from recent channel history via `conversations.history`. Feels like a natural 1:1 chat.
+- **DMs (Messages tab)**: Flat responses (no threading). Multi-turn context built from recent channel history via `conversations.history`. Each agent reply includes context-aware suggestion buttons below it (from shared `getChips()`) — or none when the agent asks an open question.
 - **Channel mentions (`@Vigil`)**: Threaded responses to avoid cluttering shared channels. Multi-turn via `conversations.replies` within the thread.
 - **`/vigil` slash command**: Single-turn. Acknowledges immediately, posts response via `response_url`.
 
-App Home tab:
+App Home tab (current final layout):
 - Renders on `app_home_opened` event via `views.publish`
-- Shows: welcome description, 4 quick-action buttons (Log a new hire, Add a contract, Track an asset, Update a record), dynamic "Try saying" suggestion buttons (randomized prompts matching web app style), traffic light summary of urgent items from DB, recently logged items, footer with usage tips + link to web dashboard
-- Button clicks open a DM with Vigil and start the conversation via `handleButtonAction`
+- Structure: AI disclaimer context block → divider → 128px icon image block → "Vigil" header → long description section → divider → 2×2 action buttons (Log a new hire, Add a contract, Track an asset, Update a record) → divider → dynamic "Try saying" suggestion buttons (randomized) → divider → urgent items (traffic light from DB) → recent items → footer (tips + dashboard link)
+- Uses `public/icon-128.png` (resized from 512 via `sharp` npm package) so Block Kit renders it at ~128px instead of 360px
+- Button clicks trigger `handleButtonAction(userId, actionValue, channelId?)`. Falls back to using `userId` as channel when `conversations.open` fails (avoids needing `im:write` scope)
 - Requires Interactivity URL set to `/api/slack/events` in Slack app dashboard
+
+Block Kit limitations (documented, accepted):
+- **No center alignment** on any block type. Text, headers, buttons all left-align. Policy Support Assistant's centered layout uses the Agents & AI Apps (Agentforce) feature, not Block Kit.
+- **Image blocks always show "Open in new window"** on hover. Can't be disabled.
+- **Agents & AI Apps mode** was tested but reverted — had issues in current state. Vigil stays on standard Block Kit Home tab.
 
 Not yet implemented:
 - Reply handling: "done" → mark resolved, "snooze 2w" → reschedule
