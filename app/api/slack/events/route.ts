@@ -18,49 +18,40 @@ function stripMention(text: string): string {
   return text.replace(/<@[A-Z0-9]+>/g, "").trim();
 }
 
-// Build messages array from a Slack thread for multi-turn conversation
-async function buildThreadMessages(
-  channel: string,
-  threadTs: string,
-  botUserId: string
-): Promise<Message[]> {
-  const result = await slack.conversations.replies({
-    channel,
-    ts: threadTs,
-    limit: 50,
-  });
-
-  const messages: Message[] = [];
-  for (const msg of result.messages ?? []) {
-    const isBot = msg.bot_id || msg.user === botUserId;
-    const text = stripMention(msg.text ?? "");
-    if (!text) continue;
-
-    messages.push({
-      role: isBot ? "assistant" : "user",
-      content: text,
-    });
-  }
-
-  return messages;
+// Convert Markdown bold (**text**, __text__) to Slack mrkdwn bold (*text*).
+// The agent emits standard Markdown; Slack's mrkdwn uses single asterisks.
+function toSlackMrkdwn(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "*$1*")
+    .replace(/__(.+?)__/g, "*$1*");
 }
 
-// Build messages from recent DM channel history (flat conversation, no threads)
-async function buildDMHistory(
+// Build messages from recent channel history (flat conversation, no threads).
+// In DMs, every message is part of the conversation. In public channels we only
+// include messages from the bot or that mention the bot, so unrelated chatter
+// doesn't pollute the agent's context.
+async function buildChannelHistory(
   channel: string,
-  botUserId: string
+  botUserId: string,
+  isDM: boolean
 ): Promise<Message[]> {
   const result = await slack.conversations.history({
     channel,
     limit: 20,
   });
 
+  const botMention = `<@${botUserId}>`;
   const messages: Message[] = [];
   for (const msg of (result.messages ?? []).reverse()) {
     // Skip subtypes like channel_join, bot_add, etc
     if (msg.subtype && msg.subtype !== "bot_message") continue;
     const isBot = msg.bot_id || msg.user === botUserId;
-    const text = stripMention(msg.text ?? "");
+    const rawText = msg.text ?? "";
+
+    // In channels: only include bot replies and messages that mentioned the bot
+    if (!isDM && !isBot && !rawText.includes(botMention)) continue;
+
+    const text = stripMention(rawText);
     if (!text) continue;
 
     messages.push({
@@ -72,45 +63,23 @@ async function buildDMHistory(
   return messages;
 }
 
-// Detect if a channel is a DM (im) by checking channel type
-async function isDMChannel(channel: string): Promise<boolean> {
-  try {
-    const info = await slack.conversations.info({ channel });
-    return info.channel?.is_im === true;
-  } catch {
-    return false;
-  }
-}
-
-// Process a Slack event and post the agent's reply
+// Process a Slack event and post the agent's reply.
+// Both DMs and channel mentions use flat (non-threaded) responses with
+// context-aware suggestion buttons — channel behavior matches the Messages tab.
 async function handleSlackMessage(
   channel: string,
-  text: string,
-  threadTs: string | undefined,
-  eventTs: string,
   botUserId: string,
   channelType: string
 ) {
   try {
     const isDM = channelType === "im";
-    let messages: Message[];
-
-    if (isDM) {
-      // DMs: flat conversation — fetch recent channel history for context
-      messages = await buildDMHistory(channel, botUserId);
-    } else if (threadTs) {
-      // Channel thread reply: fetch thread history
-      messages = await buildThreadMessages(channel, threadTs, botUserId);
-    } else {
-      // Channel first message: single turn
-      messages = [{ role: "user", content: stripMention(text) }];
-    }
+    const messages = await buildChannelHistory(channel, botUserId, isDM);
 
     if (!messages.length) return;
 
     const result = await processChat(messages, SLACK_VIGIL_ORG_ID, SLACK_VIGIL_USER_ID);
 
-    let replyText = result.message;
+    let replyText = toSlackMrkdwn(result.message);
     if (result.item_logged) {
       replyText += `\n\n:white_check_mark: *${result.item_name}* logged to Vigil.`;
     }
@@ -118,37 +87,22 @@ async function handleSlackMessage(
       replyText += `\n\n:bell: Reminders added for *${result.item_name}*.`;
     }
 
-    if (isDM) {
-      // DMs: flat response with context-aware suggestion buttons
-      const suggestionBlocks = buildSuggestionBlocks(replyText);
-      const blocks = [
-        {
-          type: "section",
-          text: { type: "mrkdwn", text: replyText },
-        },
-        ...suggestionBlocks,
-      ];
+    const suggestionBlocks = buildSuggestionBlocks(replyText);
+    const blocks = [
+      { type: "section", text: { type: "mrkdwn", text: replyText } },
+      ...suggestionBlocks,
+    ];
 
-      await slack.chat.postMessage({
-        channel,
-        text: replyText,
-        // Only use blocks if we have suggestions; otherwise plain text
-        ...(suggestionBlocks.length > 0 ? { blocks } : {}),
-      });
-    } else {
-      // Channels: threaded, no suggestion buttons
-      await slack.chat.postMessage({
-        channel,
-        thread_ts: threadTs ?? eventTs,
-        text: replyText,
-      });
-    }
+    await slack.chat.postMessage({
+      channel,
+      text: replyText,
+      ...(suggestionBlocks.length > 0 ? { blocks } : {}),
+    });
   } catch (error) {
     console.error("Slack message handling error:", error);
 
     await slack.chat.postMessage({
       channel,
-      thread_ts: channelType === "im" ? undefined : (threadTs ?? eventTs),
       text: "Sorry, I ran into an issue processing that. Please try again.",
     }).catch(() => {});
   }
@@ -334,16 +288,17 @@ async function publishHomeTab(userId: string) {
         { type: "mrkdwn", text: "*Or try one of these:*" },
       ],
     },
+    // Section + accessory button so the full prompt wraps across the row
+    // (Block Kit buttons truncate; sections expand to fill available width).
     ...suggestions.map((s, i) => ({
-      type: "actions" as const,
-      elements: [
-        {
-          type: "button" as const,
-          text: { type: "plain_text" as const, text: `\u{1f4ac} ${s}`, emoji: true },
-          value: s,
-          action_id: `action_suggestion_${i}`,
-        },
-      ],
+      type: "section" as const,
+      text: { type: "mrkdwn" as const, text: `\u{1f4ac}  ${s}` },
+      accessory: {
+        type: "button" as const,
+        text: { type: "plain_text" as const, text: "Try", emoji: true },
+        value: s,
+        action_id: `action_suggestion_${i}`,
+      },
     })),
     { type: "divider" },
     ...urgentBlocks,
@@ -414,7 +369,7 @@ async function handleButtonAction(userId: string, actionValue: string, channelId
     const messages: Message[] = [{ role: "user", content: actionValue }];
     const result = await processChat(messages, SLACK_VIGIL_ORG_ID, SLACK_VIGIL_USER_ID);
 
-    let replyText = result.message;
+    let replyText = toSlackMrkdwn(result.message);
     if (result.item_logged) {
       replyText += `\n\n:white_check_mark: *${result.item_name}* logged to Vigil.`;
     }
@@ -526,7 +481,7 @@ export async function POST(req: NextRequest) {
           const messages: Message[] = [{ role: "user", content: text }];
           const result = await processChat(messages, SLACK_VIGIL_ORG_ID, SLACK_VIGIL_USER_ID);
 
-          let replyText = result.message;
+          let replyText = toSlackMrkdwn(result.message);
           if (result.item_logged) {
             replyText += `\n\n:white_check_mark: *${result.item_name}* logged to Vigil.`;
           }
@@ -585,9 +540,6 @@ export async function POST(req: NextRequest) {
       waitUntil(
         handleSlackMessage(
           event.channel,
-          event.text ?? "",
-          event.thread_ts,
-          event.ts,
           botUserId,
           event.channel_type ?? ""
         )
